@@ -1,0 +1,73 @@
+# ==============================
+# Simulation (VCS / Verdi)
+# ==============================
+simv
+simv.daidir/
+csrc/
+ucli.key
+.nfs*
+
+*.fsdb
+*.vcd
+*.vpd
+*.vpd.gz
+*.log
+*.key
+
+novas_dump.log
+verdiLog/
+DVEfiles/
+
+*.sdb
+*.db
+*.db.gz
+*.so
+*.o
+
+# waveform / debug
+*.rc
+*.history
+*.daidir/
+
+# ==============================
+# Synthesis (Design Compiler)
+# ==============================
+*.mr
+*.pvl
+*.syn
+*.svf
+command.log
+
+*.ddc
+*.area
+*.check
+*.clock
+*.design
+*.port
+*.power
+*.reference
+*.resource
+*.timing
+
+alib-*/
+*.db.alib
+
+# reports that regenerate
+Report/*.rpt
+
+# ==============================
+# Gate simulation
+# ==============================
+*.sdf.X
+*.sdf.log
+
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.pyc
+
+# ==============================
+# OS junk
+# ==============================
+.DS_Store
