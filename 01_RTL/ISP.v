@@ -34,20 +34,50 @@ output reg [11:0] b_out;
 //   Design
 //==============================
 
+reg        in_valid_d1;
+reg [11:0] in_d1;
+reg        param_valid_d1;
+reg [11:0] param_gain_d1;
+reg        blc_valid_d1;
+reg [11:0] blc_pixel_d1;
+reg        lsc_valid_d1;
+reg [11:0] lsc_pixel_d1;
+reg        dpc_valid_d1;
+reg [11:0] dpc_pixel_d1;
+reg        dm_valid_d1;
+reg [11:0] dm_r_d1;
+reg [11:0] dm_g_d1;
+reg [11:0] dm_b_d1;
+
 //------------------------------
 //   BLC
 //------------------------------
 wire [11:0] blc_pixel;
 wire        dpc_out_valid;
-wire [9:0]  dpc_out_pixel;
+wire [11:0] dpc_out_pixel;
 wire        dm_out_valid;
-wire [9:0]  dm_r_out;
-wire [9:0]  dm_g_out;
-wire [9:0]  dm_b_out;
+wire [11:0] dm_r_out;
+wire [11:0] dm_g_out;
+wire [11:0] dm_b_out;
 wire        ccm_out_valid;
 wire [11:0] ccm_r_out;
 wire [11:0] ccm_g_out;
 wire [11:0] ccm_b_out;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        in_valid_d1    <= 1'b0;
+        in_d1          <= 12'd0;
+        param_valid_d1 <= 1'b0;
+        param_gain_d1  <= 12'd0;
+    end
+    else begin
+        in_valid_d1    <= in_valid;
+        in_d1          <= in;
+        param_valid_d1 <= param_valid;
+        param_gain_d1  <= param_gain;
+    end
+end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -74,8 +104,8 @@ end
 blc u_blc (
     .clk      (clk),
     .rst_n    (rst_n),
-    .in_valid (in_valid),
-    .in       (in),
+    .in_valid (in_valid_d1),
+    .in       (in_d1),
     .blc_pixel(blc_pixel)
 );
 //------------------------------
@@ -84,26 +114,56 @@ blc u_blc (
 wire       lsc_valid;
 wire [11:0] lsc_pixel;
 
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        blc_valid_d1 <= 1'b0;
+        blc_pixel_d1 <= 12'd0;
+        lsc_valid_d1 <= 1'b0;
+        lsc_pixel_d1 <= 12'd0;
+        dpc_valid_d1 <= 1'b0;
+        dpc_pixel_d1 <= 12'd0;
+        dm_valid_d1  <= 1'b0;
+        dm_r_d1      <= 12'd0;
+        dm_g_d1      <= 12'd0;
+        dm_b_d1      <= 12'd0;
+    end
+    else begin
+        blc_valid_d1 <= in_valid_d1;
+        blc_pixel_d1 <= blc_pixel;
+
+        lsc_valid_d1 <= lsc_valid;
+        lsc_pixel_d1 <= lsc_pixel;
+
+        dpc_valid_d1 <= dpc_out_valid;
+        dpc_pixel_d1 <= dpc_out_pixel;
+
+        dm_valid_d1 <= dm_out_valid;
+        dm_r_d1     <= dm_r_out;
+        dm_g_d1     <= dm_g_out;
+        dm_b_d1     <= dm_b_out;
+    end
+end
+
 lsc u_lsc (
     .clk        (clk),
     .rst_n      (rst_n),
-    .in_valid   (in_valid),
-    .blc_pixel  (blc_pixel),
-    .param_valid(param_valid),
-    .param_gain (param_gain),
+    .in_valid   (blc_valid_d1),
+    .blc_pixel  (blc_pixel_d1),
+    .param_valid(param_valid_d1),
+    .param_gain (param_gain_d1),
     .lsc_valid  (lsc_valid),
     .lsc_pixel  (lsc_pixel)
 );
 dpc u_dpc (
     .clk          (clk),
     .rst_n        (rst_n),
-    .lsc_valid    (lsc_valid),
-    .lsc_pixel    (lsc_pixel),
+    .lsc_valid    (lsc_valid_d1),
+    .lsc_pixel    (lsc_pixel_d1),
     .dpc_out_valid(dpc_out_valid),
     .dpc_out_pixel(dpc_out_pixel)
 );
 demosaic_bilinear_3x3 #(
-    .PIXW(10),
+    .PIXW(12),
     .IMG_W(16),
     .IMG_H(16),
     .ROWW(4),
@@ -111,8 +171,8 @@ demosaic_bilinear_3x3 #(
 ) u_demosaic_bilinear_3x3 (
     .clk      (clk),
     .rst_n    (rst_n),
-    .in_valid (dpc_out_valid),
-    .pixel_in (dpc_out_pixel),
+    .in_valid (dpc_valid_d1),
+    .pixel_in (dpc_pixel_d1),
     .out_valid(dm_out_valid),
     .r_out    (dm_r_out),
     .g_out    (dm_g_out),
@@ -122,10 +182,10 @@ demosaic_bilinear_3x3 #(
 ccm u_ccm (
     .clk      (clk),
     .rst_n    (rst_n),
-    .in_valid (dm_out_valid),
-    .r_in     ({2'b00, dm_r_out}),
-    .g_in     ({2'b00, dm_g_out}),
-    .b_in     ({2'b00, dm_b_out}),
+    .in_valid (dm_valid_d1),
+    .r_in     (dm_r_d1),
+    .g_in     (dm_g_d1),
+    .b_in     (dm_b_d1),
     .out_valid(ccm_out_valid),
     .r_out    (ccm_r_out),
     .g_out    (ccm_g_out),
@@ -153,25 +213,16 @@ module demosaic_bilinear_3x3 #(
 localparam [ROWW-1:0] LAST_ROW = IMG_H - 1;
 localparam [COLW-1:0] LAST_COL = IMG_W - 1;
 
-reg [PIXW-1:0] linebuf0 [0:IMG_W-1];
-reg [PIXW-1:0] linebuf1 [0:IMG_W-1];
-reg [PIXW-1:0] linebuf2 [0:IMG_W-1];
-reg [PIXW-1:0] linebuf3 [0:IMG_W-1];
-
-reg [ROWW-1:0] in_row;
-reg [COLW-1:0] in_col;
-reg [PIXW-1:0] cur_prev1;
-reg [PIXW-1:0] cur_prev2;
-
-reg            drain_active;
-reg [COLW:0]   drain_cnt;
-
-reg            core_in_valid;
-reg [ROWW-1:0] core_row_in;
-reg [COLW-1:0] core_col_in;
-reg [PIXW-1:0] core_nw_in, core_n_in, core_ne_in;
-reg [PIXW-1:0] core_w_in , core_c_in, core_e_in;
-reg [PIXW-1:0] core_sw_in, core_s_in, core_se_in;
+reg [PIXW-1:0] frame_mem [0:IMG_H-1][0:IMG_W-1];
+reg [ROWW-1:0] wr_row;
+reg [COLW-1:0] wr_col;
+reg [ROWW-1:0] rd_row;
+reg [COLW-1:0] rd_col;
+reg            frame_ready;
+reg            out_valid_r;
+reg [PIXW-1:0] r_out_r;
+reg [PIXW-1:0] g_out_r;
+reg [PIXW-1:0] b_out_r;
 
 function [ROWW-1:0] mirror_row_idx;
     input integer idx;
@@ -197,184 +248,121 @@ function [COLW-1:0] mirror_col_idx;
     end
 endfunction
 
-function [PIXW-1:0] read_linebuf;
-    input [ROWW-1:0]  row_sel;
-    input [COLW-1:0]  col_sel;
-    begin
-        case (row_sel[1:0])
-            2'd0: read_linebuf = linebuf0[col_sel];
-            2'd1: read_linebuf = linebuf1[col_sel];
-            2'd2: read_linebuf = linebuf2[col_sel];
-            default: read_linebuf = linebuf3[col_sel];
-        endcase
+wire [ROWW-1:0] row_m1 = mirror_row_idx($signed({1'b0, rd_row}) - 1);
+wire [ROWW-1:0] row_0  = mirror_row_idx($signed({1'b0, rd_row}));
+wire [ROWW-1:0] row_p1 = mirror_row_idx($signed({1'b0, rd_row}) + 1);
+wire [COLW-1:0] col_m1 = mirror_col_idx($signed({1'b0, rd_col}) - 1);
+wire [COLW-1:0] col_0  = mirror_col_idx($signed({1'b0, rd_col}));
+wire [COLW-1:0] col_p1 = mirror_col_idx($signed({1'b0, rd_col}) + 1);
+
+wire [PIXW-1:0] nw_in = frame_mem[row_m1][col_m1];
+wire [PIXW-1:0] n_in  = frame_mem[row_m1][col_0 ];
+wire [PIXW-1:0] ne_in = frame_mem[row_m1][col_p1];
+wire [PIXW-1:0] w_in  = frame_mem[row_0 ][col_m1];
+wire [PIXW-1:0] c_in  = frame_mem[row_0 ][col_0 ];
+wire [PIXW-1:0] e_in  = frame_mem[row_0 ][col_p1];
+wire [PIXW-1:0] sw_in = frame_mem[row_p1][col_m1];
+wire [PIXW-1:0] s_in  = frame_mem[row_p1][col_0 ];
+wire [PIXW-1:0] se_in = frame_mem[row_p1][col_p1];
+
+wire [PIXW+1:0] cross_sum = n_in + s_in + w_in + e_in;
+wire [PIXW+1:0] diag_sum  = nw_in + ne_in + sw_in + se_in;
+wire [PIXW  :0] h_sum     = w_in + e_in;
+wire [PIXW  :0] v_sum     = n_in + s_in;
+
+wire [PIXW-1:0] cross_avg = (cross_sum + 2'd2) >> 2;
+wire [PIXW-1:0] diag_avg  = (diag_sum  + 2'd2) >> 2;
+wire [PIXW-1:0] h_avg     = (h_sum     + 1'd1) >> 1;
+wire [PIXW-1:0] v_avg     = (v_sum     + 1'd1) >> 1;
+
+reg [PIXW-1:0] calc_r;
+reg [PIXW-1:0] calc_g;
+reg [PIXW-1:0] calc_b;
+
+always @(*) begin
+    if ((rd_row[0] == 1'b0) && (rd_col[0] == 1'b0)) begin
+        calc_r = c_in;
+        calc_g = cross_avg;
+        calc_b = diag_avg;
     end
-endfunction
+    else if ((rd_row[0] == 1'b0) && (rd_col[0] == 1'b1)) begin
+        calc_r = h_avg;
+        calc_g = c_in;
+        calc_b = v_avg;
+    end
+    else if ((rd_row[0] == 1'b1) && (rd_col[0] == 1'b0)) begin
+        calc_r = v_avg;
+        calc_g = c_in;
+        calc_b = h_avg;
+    end
+    else begin
+        calc_r = diag_avg;
+        calc_g = cross_avg;
+        calc_b = c_in;
+    end
+end
+
+assign out_valid = out_valid_r;
+assign r_out = r_out_r;
+assign g_out = g_out_r;
+assign b_out = b_out_r;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        in_row       <= {ROWW{1'b0}};
-        in_col       <= {COLW{1'b0}};
-        cur_prev1    <= {PIXW{1'b0}};
-        cur_prev2    <= {PIXW{1'b0}};
-        drain_active <= 1'b0;
-        drain_cnt    <= {(COLW+1){1'b0}};
+        wr_row     <= {ROWW{1'b0}};
+        wr_col     <= {COLW{1'b0}};
+        rd_row     <= {ROWW{1'b0}};
+        rd_col     <= {COLW{1'b0}};
+        frame_ready <= 1'b0;
+        out_valid_r <= 1'b0;
+        r_out_r     <= {PIXW{1'b0}};
+        g_out_r     <= {PIXW{1'b0}};
+        b_out_r     <= {PIXW{1'b0}};
     end
     else begin
-        if (in_valid) begin
-            case (in_row[1:0])
-                2'd0: linebuf0[in_col] <= pixel_in;
-                2'd1: linebuf1[in_col] <= pixel_in;
-                2'd2: linebuf2[in_col] <= pixel_in;
-                default: linebuf3[in_col] <= pixel_in;
-            endcase
+        out_valid_r <= 1'b0;
+        r_out_r     <= {PIXW{1'b0}};
+        g_out_r     <= {PIXW{1'b0}};
+        b_out_r     <= {PIXW{1'b0}};
 
-            if (in_col == {COLW{1'b0}}) begin
-                cur_prev2 <= {PIXW{1'b0}};
-                cur_prev1 <= pixel_in;
+        if (in_valid && !frame_ready) begin
+            frame_mem[wr_row][wr_col] <= pixel_in;
+            if ((wr_row == LAST_ROW) && (wr_col == LAST_COL)) begin
+                wr_row      <= {ROWW{1'b0}};
+                wr_col      <= {COLW{1'b0}};
+                rd_row      <= {ROWW{1'b0}};
+                rd_col      <= {COLW{1'b0}};
+                frame_ready <= 1'b1;
+            end
+            else if (wr_col == LAST_COL) begin
+                wr_col <= {COLW{1'b0}};
+                wr_row <= wr_row + {{(ROWW-1){1'b0}}, 1'b1};
             end
             else begin
-                cur_prev2 <= cur_prev1;
-                cur_prev1 <= pixel_in;
-            end
-
-            if ((in_row == LAST_ROW) && (in_col == LAST_COL)) begin
-                in_row       <= {ROWW{1'b0}};
-                in_col       <= {COLW{1'b0}};
-                drain_active <= 1'b1;
-                drain_cnt    <= {(COLW+1){1'b0}};
-            end
-            else if (in_col == LAST_COL) begin
-                in_col <= {COLW{1'b0}};
-                in_row <= in_row + {{(ROWW-1){1'b0}}, 1'b1};
-            end
-            else begin
-                in_col <= in_col + {{(COLW-1){1'b0}}, 1'b1};
+                wr_col <= wr_col + {{(COLW-1){1'b0}}, 1'b1};
             end
         end
-        else if (drain_active) begin
-            if (drain_cnt == IMG_W) begin
-                drain_active <= 1'b0;
-                drain_cnt    <= {(COLW+1){1'b0}};
+        else if (frame_ready) begin
+            out_valid_r <= 1'b1;
+            r_out_r     <= calc_r;
+            g_out_r     <= calc_g;
+            b_out_r     <= calc_b;
+
+            if ((rd_row == LAST_ROW) && (rd_col == LAST_COL)) begin
+                rd_row      <= {ROWW{1'b0}};
+                rd_col      <= {COLW{1'b0}};
+                frame_ready <= 1'b0;
+            end
+            else if (rd_col == LAST_COL) begin
+                rd_col <= {COLW{1'b0}};
+                rd_row <= rd_row + {{(ROWW-1){1'b0}}, 1'b1};
             end
             else begin
-                drain_cnt <= drain_cnt + {{COLW{1'b0}}, 1'b1};
+                rd_col <= rd_col + {{(COLW-1){1'b0}}, 1'b1};
             end
         end
     end
 end
-
-always @(*) begin
-    core_in_valid = 1'b0;
-    core_row_in   = {ROWW{1'b0}};
-    core_col_in   = {COLW{1'b0}};
-    core_nw_in = {PIXW{1'b0}};
-    core_n_in  = {PIXW{1'b0}};
-    core_ne_in = {PIXW{1'b0}};
-    core_w_in  = {PIXW{1'b0}};
-    core_c_in  = {PIXW{1'b0}};
-    core_e_in  = {PIXW{1'b0}};
-    core_sw_in = {PIXW{1'b0}};
-    core_s_in  = {PIXW{1'b0}};
-    core_se_in = {PIXW{1'b0}};
-
-    if (in_valid) begin
-        if ((in_row >= 2) && (in_col == {COLW{1'b0}})) begin
-            core_in_valid = 1'b1;
-            core_row_in   = in_row - {{(ROWW-2){1'b0}}, 2'd2};
-            core_col_in   = LAST_COL;
-
-            core_nw_in = read_linebuf(in_row - 3'd3, mirror_col_idx(IMG_W-2));
-            core_n_in  = read_linebuf(in_row - 3'd3, LAST_COL);
-            core_ne_in = read_linebuf(in_row - 3'd3, mirror_col_idx(IMG_W));
-            core_w_in  = read_linebuf(in_row - 3'd2, mirror_col_idx(IMG_W-2));
-            core_c_in  = read_linebuf(in_row - 3'd2, LAST_COL);
-            core_e_in  = read_linebuf(in_row - 3'd2, mirror_col_idx(IMG_W));
-            core_sw_in = read_linebuf(in_row - 3'd1, mirror_col_idx(IMG_W-2));
-            core_s_in  = read_linebuf(in_row - 3'd1, LAST_COL);
-            core_se_in = read_linebuf(in_row - 3'd1, mirror_col_idx(IMG_W));
-        end
-        else if ((in_row >= 1) && (in_col >= 1)) begin
-            core_in_valid = 1'b1;
-            core_row_in   = in_row - {{(ROWW-1){1'b0}}, 1'b1};
-            core_col_in   = in_col - {{(COLW-1){1'b0}}, 1'b1};
-
-            core_nw_in = read_linebuf(in_row - 2'd2, mirror_col_idx(in_col - 2));
-            core_n_in  = read_linebuf(in_row - 2'd2, in_col - 1);
-            core_ne_in = read_linebuf(in_row - 2'd2, in_col);
-            core_w_in  = read_linebuf(in_row - 1'd1, mirror_col_idx(in_col - 2));
-            core_c_in  = read_linebuf(in_row - 1'd1, in_col - 1);
-            core_e_in  = read_linebuf(in_row - 1'd1, in_col);
-
-            if (in_col == 1) begin
-                core_sw_in = pixel_in;
-                core_s_in  = cur_prev1;
-                core_se_in = pixel_in;
-            end
-            else begin
-                core_sw_in = cur_prev2;
-                core_s_in  = cur_prev1;
-                core_se_in = pixel_in;
-            end
-        end
-    end
-    else if (drain_active) begin
-        core_in_valid = 1'b1;
-
-        if (drain_cnt == {(COLW+1){1'b0}}) begin
-            core_row_in = LAST_ROW - {{(ROWW-1){1'b0}}, 1'b1};
-            core_col_in = LAST_COL;
-
-            core_nw_in = read_linebuf(LAST_ROW - 2'd2, mirror_col_idx(IMG_W-2));
-            core_n_in  = read_linebuf(LAST_ROW - 2'd2, LAST_COL);
-            core_ne_in = read_linebuf(LAST_ROW - 2'd2, mirror_col_idx(IMG_W));
-            core_w_in  = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(IMG_W-2));
-            core_c_in  = read_linebuf(LAST_ROW - 1'd1, LAST_COL);
-            core_e_in  = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(IMG_W));
-            core_sw_in = read_linebuf(LAST_ROW, mirror_col_idx(IMG_W-2));
-            core_s_in  = read_linebuf(LAST_ROW, LAST_COL);
-            core_se_in = read_linebuf(LAST_ROW, mirror_col_idx(IMG_W));
-        end
-        else begin
-            core_row_in = LAST_ROW;
-            core_col_in = drain_cnt[COLW-1:0] - {{(COLW-1){1'b0}}, 1'b1};
-
-            core_nw_in = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(drain_cnt - 2));
-            core_n_in  = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(drain_cnt - 1));
-            core_ne_in = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(drain_cnt));
-            core_w_in  = read_linebuf(LAST_ROW, mirror_col_idx(drain_cnt - 2));
-            core_c_in  = read_linebuf(LAST_ROW, mirror_col_idx(drain_cnt - 1));
-            core_e_in  = read_linebuf(LAST_ROW, mirror_col_idx(drain_cnt));
-            core_sw_in = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(drain_cnt - 2));
-            core_s_in  = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(drain_cnt - 1));
-            core_se_in = read_linebuf(LAST_ROW - 1'd1, mirror_col_idx(drain_cnt));
-        end
-    end
-end
-
-demosaic_bilinear_3x3_core #(
-    .PIXW(PIXW),
-    .ROWW(ROWW),
-    .COLW(COLW)
-) u_demosaic_bilinear_3x3_core (
-    .clk      (clk),
-    .rst_n    (rst_n),
-    .in_valid (core_in_valid),
-    .row_in   (core_row_in),
-    .col_in   (core_col_in),
-    .nw_in    (core_nw_in),
-    .n_in     (core_n_in),
-    .ne_in    (core_ne_in),
-    .w_in     (core_w_in),
-    .c_in     (core_c_in),
-    .e_in     (core_e_in),
-    .sw_in    (core_sw_in),
-    .s_in     (core_s_in),
-    .se_in    (core_se_in),
-    .out_valid(out_valid),
-    .r_out    (r_out),
-    .g_out    (g_out),
-    .b_out    (b_out)
-);
 
 endmodule
 
@@ -460,7 +448,7 @@ always @(posedge clk or negedge rst_n) begin
             col_d2 <= col_d1;
         end
 
-        out_valid <= vld_d2;
+        out_valid <= vld_d1;
     end
 end
 
@@ -470,7 +458,7 @@ always @(posedge clk or negedge rst_n) begin
         w_r  <= {PIXW{1'b0}}; c_r <= {PIXW{1'b0}}; e_r  <= {PIXW{1'b0}};
         sw_r <= {PIXW{1'b0}}; s_r <= {PIXW{1'b0}}; se_r <= {PIXW{1'b0}};
     end
-    else if (vld_d0) begin
+    else if (in_valid) begin
         nw_r <= nw_in; n_r <= n_in; ne_r <= ne_in;
         w_r  <= w_in;  c_r <= c_in; e_r  <= e_in;
         sw_r <= sw_in; s_r <= s_in; se_r <= se_in;
@@ -486,18 +474,18 @@ always @(posedge clk or negedge rst_n) begin
         h_sum_r      <= {(PIXW+1){1'b0}};
         v_sum_r      <= {(PIXW+1){1'b0}};
     end
-    else if (vld_d1) begin
+    else if (vld_d0) begin
         c_d1        <= c_r;
         cross_sum_r <= n_r + s_r + w_r + e_r;
         diag_sum_r  <= nw_r + ne_r + sw_r + se_r;
         h_sum_r     <= w_r + e_r;
         v_sum_r     <= n_r + s_r;
 
-        if ((row_d1[0] == 1'b0) && (col_d1[0] == 1'b0))
+        if ((row_d0[0] == 1'b0) && (col_d0[0] == 1'b0))
             pixel_type_r <= R_SITE;
-        else if ((row_d1[0] == 1'b0) && (col_d1[0] == 1'b1))
+        else if ((row_d0[0] == 1'b0) && (col_d0[0] == 1'b1))
             pixel_type_r <= G_ON_R_ROW;
-        else if ((row_d1[0] == 1'b1) && (col_d1[0] == 1'b0))
+        else if ((row_d0[0] == 1'b1) && (col_d0[0] == 1'b0))
             pixel_type_r <= G_ON_B_ROW;
         else
             pixel_type_r <= B_SITE;
@@ -510,7 +498,7 @@ always @(posedge clk or negedge rst_n) begin
         g_out <= {PIXW{1'b0}};
         b_out <= {PIXW{1'b0}};
     end
-    else if (vld_d2) begin
+    else if (vld_d1) begin
         case (pixel_type_r)
             R_SITE: begin
                 r_out <= c_d1;
@@ -678,7 +666,7 @@ module dpc (
     input               lsc_valid,
     input      [11:0]   lsc_pixel,
     output reg          dpc_out_valid,
-    output reg [9:0]    dpc_out_pixel
+    output reg [11:0]   dpc_out_pixel
 );
 
 localparam [2:0] DPC_IDLE    = 3'd0;
@@ -686,29 +674,29 @@ localparam [2:0] DPC_LOADWIN = 3'd1;
 localparam [2:0] DPC_SCORE   = 3'd2;
 localparam [2:0] DPC_APPLY   = 3'd3;
 localparam [2:0] DPC_OUT     = 3'd4;
-localparam [9:0] DPC_TH = 10'd320;
+localparam [11:0] DPC_TH = 12'd320;
 
-reg [9:0] dpc_img [0:15][0:15];
+reg [11:0] dpc_img [0:15][0:15];
 reg [3:0] dpc_wr_row, dpc_wr_col;
 reg       dpc_frame_loaded, dpc_frame_clear;
 reg [2:0] dpc_state;
 reg [3:0] dpc_row, dpc_col;
-reg [9:0] win00, win01, win02, win03, win04;
-reg [9:0] win10, win11, win12, win13, win14;
-reg [9:0] win20, win21, win22, win23, win24;
-reg [9:0] win30, win31, win32, win33, win34;
-reg [9:0] win40, win41, win42, win43, win44;
-reg [9:0] center_p;
-reg [9:0] h0, h1, h2, h3;
-reg [9:0] v0, v1, v2, v3;
-reg [9:0] d10, d11, d12, d13;
-reg [9:0] d20, d21, d22, d23;
-reg [9:0] med_h, med_v, med_d1, med_d2;
-reg [12:0] score_h, score_v, score_d1, score_d2;
-reg [9:0] best_target, corrected_p;
-reg [12:0] best_score, best_score_comb;
-reg [10:0] center_diff;
-reg [9:0] best_target_comb;
+reg [11:0] win00, win01, win02, win03, win04;
+reg [11:0] win10, win11, win12, win13, win14;
+reg [11:0] win20, win21, win22, win23, win24;
+reg [11:0] win30, win31, win32, win33, win34;
+reg [11:0] win40, win41, win42, win43, win44;
+reg [11:0] center_p;
+reg [11:0] h0, h1, h2, h3;
+reg [11:0] v0, v1, v2, v3;
+reg [11:0] d10, d11, d12, d13;
+reg [11:0] d20, d21, d22, d23;
+reg [11:0] med_h, med_v, med_d1, med_d2;
+reg [14:0] score_h, score_v, score_d1, score_d2;
+reg [11:0] best_target, corrected_p;
+reg [14:0] best_score, best_score_comb;
+reg [12:0] center_diff;
+reg [11:0] best_target_comb;
 
 function [3:0] mirror_idx_16;
     input integer idx;
@@ -719,34 +707,34 @@ function [3:0] mirror_idx_16;
     end
 endfunction
 
-function [10:0] abs_diff_10;
-    input [9:0] a, b;
+function [12:0] abs_diff_10;
+    input [11:0] a, b;
     begin
         if (a >= b) abs_diff_10 = a - b;
         else        abs_diff_10 = b - a;
     end
 endfunction
 
-function [9:0] min2_10;
-    input [9:0] a, b;
+function [11:0] min2_10;
+    input [11:0] a, b;
     begin
         if (a < b) min2_10 = a;
         else       min2_10 = b;
     end
 endfunction
 
-function [9:0] max2_10;
-    input [9:0] a, b;
+function [11:0] max2_10;
+    input [11:0] a, b;
     begin
         if (a > b) max2_10 = a;
         else       max2_10 = b;
     end
 endfunction
 
-function [9:0] median4_10;
-    input [9:0] a, b, c, d;
-    reg [9:0] min_ab, max_ab, min_cd, max_cd, mid_lo, mid_hi;
-    reg [10:0] mid_sum;
+function [11:0] median4_10;
+    input [11:0] a, b, c, d;
+    reg [11:0] min_ab, max_ab, min_cd, max_cd, mid_lo, mid_hi;
+    reg [12:0] mid_sum;
     begin
         min_ab = min2_10(a, b);
         max_ab = max2_10(a, b);
@@ -759,9 +747,9 @@ function [9:0] median4_10;
     end
 endfunction
 
-function [12:0] score4_10;
-    input [9:0] p0, p1, p2, p3, med;
-    reg [10:0] a0, a1, a2, a3;
+function [14:0] score4_10;
+    input [11:0] p0, p1, p2, p3, med;
+    reg [12:0] a0, a1, a2, a3;
     begin
         a0 = abs_diff_10(p0, med);
         a1 = abs_diff_10(p1, med);
@@ -781,31 +769,31 @@ wire [3:0] c_m1 = mirror_idx_16($signed({1'b0,dpc_col}) - 1);
 wire [3:0] c_0  = mirror_idx_16($signed({1'b0,dpc_col}) + 0);
 wire [3:0] c_p1 = mirror_idx_16($signed({1'b0,dpc_col}) + 1);
 wire [3:0] c_p2 = mirror_idx_16($signed({1'b0,dpc_col}) + 2);
-wire [9:0] win00_n = dpc_img[r_m2][c_m2];
-wire [9:0] win01_n = dpc_img[r_m2][c_m1];
-wire [9:0] win02_n = dpc_img[r_m2][c_0 ];
-wire [9:0] win03_n = dpc_img[r_m2][c_p1];
-wire [9:0] win04_n = dpc_img[r_m2][c_p2];
-wire [9:0] win10_n = dpc_img[r_m1][c_m2];
-wire [9:0] win11_n = dpc_img[r_m1][c_m1];
-wire [9:0] win12_n = dpc_img[r_m1][c_0 ];
-wire [9:0] win13_n = dpc_img[r_m1][c_p1];
-wire [9:0] win14_n = dpc_img[r_m1][c_p2];
-wire [9:0] win20_n = dpc_img[r_0 ][c_m2];
-wire [9:0] win21_n = dpc_img[r_0 ][c_m1];
-wire [9:0] win22_n = dpc_img[r_0 ][c_0 ];
-wire [9:0] win23_n = dpc_img[r_0 ][c_p1];
-wire [9:0] win24_n = dpc_img[r_0 ][c_p2];
-wire [9:0] win30_n = dpc_img[r_p1][c_m2];
-wire [9:0] win31_n = dpc_img[r_p1][c_m1];
-wire [9:0] win32_n = dpc_img[r_p1][c_0 ];
-wire [9:0] win33_n = dpc_img[r_p1][c_p1];
-wire [9:0] win34_n = dpc_img[r_p1][c_p2];
-wire [9:0] win40_n = dpc_img[r_p2][c_m2];
-wire [9:0] win41_n = dpc_img[r_p2][c_m1];
-wire [9:0] win42_n = dpc_img[r_p2][c_0 ];
-wire [9:0] win43_n = dpc_img[r_p2][c_p1];
-wire [9:0] win44_n = dpc_img[r_p2][c_p2];
+wire [11:0] win00_n = dpc_img[r_m2][c_m2];
+wire [11:0] win01_n = dpc_img[r_m2][c_m1];
+wire [11:0] win02_n = dpc_img[r_m2][c_0 ];
+wire [11:0] win03_n = dpc_img[r_m2][c_p1];
+wire [11:0] win04_n = dpc_img[r_m2][c_p2];
+wire [11:0] win10_n = dpc_img[r_m1][c_m2];
+wire [11:0] win11_n = dpc_img[r_m1][c_m1];
+wire [11:0] win12_n = dpc_img[r_m1][c_0 ];
+wire [11:0] win13_n = dpc_img[r_m1][c_p1];
+wire [11:0] win14_n = dpc_img[r_m1][c_p2];
+wire [11:0] win20_n = dpc_img[r_0 ][c_m2];
+wire [11:0] win21_n = dpc_img[r_0 ][c_m1];
+wire [11:0] win22_n = dpc_img[r_0 ][c_0 ];
+wire [11:0] win23_n = dpc_img[r_0 ][c_p1];
+wire [11:0] win24_n = dpc_img[r_0 ][c_p2];
+wire [11:0] win30_n = dpc_img[r_p1][c_m2];
+wire [11:0] win31_n = dpc_img[r_p1][c_m1];
+wire [11:0] win32_n = dpc_img[r_p1][c_0 ];
+wire [11:0] win33_n = dpc_img[r_p1][c_p1];
+wire [11:0] win34_n = dpc_img[r_p1][c_p2];
+wire [11:0] win40_n = dpc_img[r_p2][c_m2];
+wire [11:0] win41_n = dpc_img[r_p2][c_m1];
+wire [11:0] win42_n = dpc_img[r_p2][c_0 ];
+wire [11:0] win43_n = dpc_img[r_p2][c_p1];
+wire [11:0] win44_n = dpc_img[r_p2][c_p2];
 
 always @(*) begin
     best_score_comb  = score_h;
@@ -815,8 +803,9 @@ always @(*) begin
     if (score_d2 < best_score_comb) begin best_score_comb = score_d2; best_target_comb = med_d2; end
 end
 
-wire [10:0] center_diff_comb = abs_diff_10(center_p, best_target_comb);
-wire [9:0]  corrected_p_comb = (center_diff_comb > DPC_TH) ? best_target_comb : center_p;
+wire [12:0] center_diff_comb = abs_diff_10(center_p, best_target_comb);
+wire        defect_force_comb = (center_p == 12'd0) || (center_p == 12'd4095);
+wire [11:0] corrected_p_comb = defect_force_comb ? best_target_comb : center_p;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -848,7 +837,7 @@ always @(posedge clk or negedge rst_n) begin
         if (dpc_frame_clear) begin
             dpc_wr_row <= 4'd0; dpc_wr_col <= 4'd0; dpc_frame_loaded <= 1'b0;
         end else if (lsc_valid && !dpc_frame_loaded) begin
-            dpc_img[dpc_wr_row][dpc_wr_col] <= lsc_pixel[9:0];
+            dpc_img[dpc_wr_row][dpc_wr_col] <= lsc_pixel;
             if ((dpc_wr_row == 4'd15) && (dpc_wr_col == 4'd15)) begin
                 dpc_wr_row <= 4'd0; dpc_wr_col <= 4'd0; dpc_frame_loaded <= 1'b1;
             end else if (dpc_wr_col == 4'd15) begin
@@ -860,15 +849,15 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        win00 <= 10'd0; win01 <= 10'd0; win02 <= 10'd0; win03 <= 10'd0; win04 <= 10'd0;
-        win10 <= 10'd0; win11 <= 10'd0; win12 <= 10'd0; win13 <= 10'd0; win14 <= 10'd0;
-        win20 <= 10'd0; win21 <= 10'd0; win22 <= 10'd0; win23 <= 10'd0; win24 <= 10'd0;
-        win30 <= 10'd0; win31 <= 10'd0; win32 <= 10'd0; win33 <= 10'd0; win34 <= 10'd0;
-        win40 <= 10'd0; win41 <= 10'd0; win42 <= 10'd0; win43 <= 10'd0; win44 <= 10'd0;
-        center_p <= 10'd0; h0 <= 10'd0; h1 <= 10'd0; h2 <= 10'd0; h3 <= 10'd0; v0 <= 10'd0; v1 <= 10'd0; v2 <= 10'd0; v3 <= 10'd0;
-        d10 <= 10'd0; d11 <= 10'd0; d12 <= 10'd0; d13 <= 10'd0; d20 <= 10'd0; d21 <= 10'd0; d22 <= 10'd0; d23 <= 10'd0;
-        med_h <= 10'd0; med_v <= 10'd0; med_d1 <= 10'd0; med_d2 <= 10'd0; score_h <= 13'd0; score_v <= 13'd0; score_d1 <= 13'd0; score_d2 <= 13'd0;
-        best_target <= 10'd0; best_score <= 13'd0; center_diff <= 11'd0; corrected_p <= 10'd0;
+        win00 <= 12'd0; win01 <= 12'd0; win02 <= 12'd0; win03 <= 12'd0; win04 <= 12'd0;
+        win10 <= 12'd0; win11 <= 12'd0; win12 <= 12'd0; win13 <= 12'd0; win14 <= 12'd0;
+        win20 <= 12'd0; win21 <= 12'd0; win22 <= 12'd0; win23 <= 12'd0; win24 <= 12'd0;
+        win30 <= 12'd0; win31 <= 12'd0; win32 <= 12'd0; win33 <= 12'd0; win34 <= 12'd0;
+        win40 <= 12'd0; win41 <= 12'd0; win42 <= 12'd0; win43 <= 12'd0; win44 <= 12'd0;
+        center_p <= 12'd0; h0 <= 12'd0; h1 <= 12'd0; h2 <= 12'd0; h3 <= 12'd0; v0 <= 12'd0; v1 <= 12'd0; v2 <= 12'd0; v3 <= 12'd0;
+        d10 <= 12'd0; d11 <= 12'd0; d12 <= 12'd0; d13 <= 12'd0; d20 <= 12'd0; d21 <= 12'd0; d22 <= 12'd0; d23 <= 12'd0;
+        med_h <= 12'd0; med_v <= 12'd0; med_d1 <= 12'd0; med_d2 <= 12'd0; score_h <= 15'd0; score_v <= 15'd0; score_d1 <= 15'd0; score_d2 <= 15'd0;
+        best_target <= 12'd0; best_score <= 15'd0; center_diff <= 13'd0; corrected_p <= 12'd0;
     end else begin
         case (dpc_state)
             DPC_LOADWIN: begin
@@ -880,14 +869,18 @@ always @(posedge clk or negedge rst_n) begin
                 center_p <= win22_n;
             end
             DPC_SCORE: begin
-                h0 <= win20; h1 <= win21; h2 <= win23; h3 <= win24; v0 <= win02; v1 <= win12; v2 <= win32; v3 <= win42;
-                d10 <= win00; d11 <= win11; d12 <= win33; d13 <= win44; d20 <= win04; d21 <= win13; d22 <= win31; d23 <= win40;
-                med_h <= median4_10(win20, win21, win23, win24); med_v <= median4_10(win02, win12, win32, win42);
-                med_d1 <= median4_10(win00, win11, win33, win44); med_d2 <= median4_10(win04, win13, win31, win40);
-                score_h <= score4_10(win20, win21, win23, win24, median4_10(win20, win21, win23, win24));
-                score_v <= score4_10(win02, win12, win32, win42, median4_10(win02, win12, win32, win42));
-                score_d1 <= score4_10(win00, win11, win33, win44, median4_10(win00, win11, win33, win44));
-                score_d2 <= score4_10(win04, win13, win31, win40, median4_10(win04, win13, win31, win40));
+                h0 <= win20; h1 <= win20; h2 <= win24; h3 <= win24;
+                v0 <= win02; v1 <= win02; v2 <= win42; v3 <= win42;
+                d10 <= win00; d11 <= win00; d12 <= win44; d13 <= win44;
+                d20 <= win04; d21 <= win04; d22 <= win40; d23 <= win40;
+                med_h  <= (win20 + win24 + 1'd1) >> 1;
+                med_v  <= (win02 + win42 + 1'd1) >> 1;
+                med_d1 <= (win00 + win44 + 1'd1) >> 1;
+                med_d2 <= (win04 + win40 + 1'd1) >> 1;
+                score_h  <= abs_diff_10(win20, win24);
+                score_v  <= abs_diff_10(win02, win42);
+                score_d1 <= abs_diff_10(win00, win44);
+                score_d2 <= abs_diff_10(win04, win40);
             end
             DPC_APPLY: begin
                 best_score <= best_score_comb; best_target <= best_target_comb; center_diff <= center_diff_comb; corrected_p <= corrected_p_comb;
@@ -898,7 +891,7 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin dpc_out_valid <= 1'b0; dpc_out_pixel <= 10'd0; end
+    if (!rst_n) begin dpc_out_valid <= 1'b0; dpc_out_pixel <= 12'd0; end
     else begin dpc_out_valid <= 1'b0; if (dpc_state == DPC_OUT) begin dpc_out_valid <= 1'b1; dpc_out_pixel <= corrected_p; end end
 end
 
