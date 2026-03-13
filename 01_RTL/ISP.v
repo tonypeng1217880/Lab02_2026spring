@@ -33,50 +33,111 @@ output reg [11:0] b_out;
 //==============================
 //   Design
 //==============================
-localparam IDLE       = 2'd0;
-localparam LOAD_PARAM = 2'd1;
-localparam DATA_IN    = 2'd2; // 原本的 STREAM_BLC，改為收資料狀態
-localparam DATA_OUT   = 2'd3; // 新增輸出狀態，確保不重疊
+localparam IDLE       = 4'd0;
+localparam LOAD_PARAM = 4'd1;
+localparam RUN_BLC    = 4'd2;
+localparam LSC_RUN    = 4'd3;
+localparam RUN_CCM    = 4'd4;
+localparam DATA_OUT   = 4'd5;
 
-reg [1:0] curr_state, next_state; 
+localparam signed [11:0] CCM_RR = 12'sd1100;
+localparam signed [11:0] CCM_RG = 12'sd50;
+localparam signed [11:0] CCM_RB = 12'sd50;
+localparam signed [11:0] CCM_GR = -12'sd42;
+localparam signed [11:0] CCM_GG = 12'sd1092;
+localparam signed [11:0] CCM_GB = 12'sd26;
+localparam signed [11:0] CCM_BR = -12'sd25;
+localparam signed [11:0] CCM_BG = -12'sd25;
+localparam signed [11:0] CCM_BB = 12'sd1074;
+
+reg [3:0] curr_state, next_state;
+reg       in_valid_d1;
+reg       param_valid_d1;
+reg [7:0] param_cnt;
+reg [7:0] blc_cnt;
+reg       blc_done_r;
+reg [7:0] lsc_cnt;
+reg [7:0] ccm_cnt;
 reg [7:0] out_cnt;
-reg [7:0] param_cnt;                  
-reg [3:0] row_cnt, col_cnt;
-reg [11:0] blc_buffer [0:255];  
-reg [6:0] b_offset;
-reg [11:0] gain_mem [0:143];
-reg [11:0] blc_in_r;
-reg        blc_in_vld_r;
 
-reg [11:0] blc_out_r;
-reg        blc_out_vld_r;
+reg [11:0] gain_mem     [0:143];
+reg [11:0] blc_buffer   [0:255];
+reg [11:0] lsc_buffer   [0:255];
+reg [11:0] ccm_r_buffer [0:255];
+reg [11:0] ccm_g_buffer [0:255];
+reg [11:0] ccm_b_buffer [0:255];
+reg [3:0] row_cnt, col_cnt;
+reg [6:0] b_offset;
+
+reg [3:0] x_now, y_now;
+reg [2:0] x0_w, y0_w;
+reg [1:0] rx_w, ry_w;
+reg [5:0] idx00_w, idx01_w, idx10_w, idx11_w;
+reg [11:0] g00_w, g01_w, g10_w, g11_w;
+reg [8:0] dx_w, ix_w, dy_w, iy_w;
+reg [31:0] gain_accum_w;
+reg [11:0] gain_w;
+reg [31:0] lsc_accum_w;
+reg [11:0] lsc_pixel_w;
+reg signed [23:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
+reg [11:0] ccm_r_w, ccm_g_w, ccm_b_w;
+
+wire param_done_w;
+wire blc_done_w;
+wire lsc_done_w;
+wire ccm_done_w;
+wire out_done_w;
+wire blc_fire_w;
+
+function [11:0] clamp_u12;
+    input signed [23:0] val;
+    begin
+        if (val[23])
+            clamp_u12 = 12'd0;
+        else if (val[21:10] > 12'd4095)
+            clamp_u12 = 12'd4095;
+        else
+            clamp_u12 = val[21:10];
+    end
+endfunction
+
+assign param_done_w = param_valid_d1 && !param_valid;
+assign blc_fire_w   = in_valid;
+assign blc_done_w   = blc_done_r;
+assign lsc_done_w   = (curr_state == LSC_RUN) && (lsc_cnt == 8'd255);
+assign ccm_done_w   = (curr_state == RUN_CCM)  && (ccm_cnt  == 8'd255);
+assign out_done_w   = (curr_state == DATA_OUT) && (out_cnt  == 8'd255);
 
 always @(*) begin
-    next_state=curr_state;
-    case(curr_state) 
-
+    next_state = curr_state;
+    case (curr_state)
         IDLE: begin
-            if (param_valid) next_state = LOAD_PARAM;
-            else if (in_valid) next_state = DATA_IN;
+            if (param_valid)
+                next_state = LOAD_PARAM;
+            else if (in_valid)
+                next_state = RUN_BLC;
         end
-
         LOAD_PARAM: begin
-            if (param_cnt==8'd143) next_state = IDLE;
+            if (param_done_w)
+                next_state = IDLE;
         end
-
-        DATA_IN: begin
-            // 等 256 個像素收完 (或是 row_cnt/col_cnt 數完)
-            if (row_cnt == 4'd15 && col_cnt == 4'd15) next_state = DATA_OUT;
+        RUN_BLC: begin
+            if (blc_done_w)
+                next_state = LSC_RUN;
         end
-
+        LSC_RUN: begin
+            if (lsc_done_w)
+                next_state = RUN_CCM;
+        end
+        RUN_CCM: begin
+            if (ccm_done_w)
+                next_state = DATA_OUT;
+        end
         DATA_OUT: begin
-            // 輸出 256 個週期後回 IDLE
-            if (out_cnt == 8'd255) next_state = IDLE;
+            if (out_done_w)
+                next_state = IDLE;
         end
-
-        default: begin
-            next_state = IDLE;
-        end
+        default: next_state = IDLE;
     endcase
 end
 
@@ -87,114 +148,272 @@ always @(posedge clk or negedge rst_n) begin
         curr_state <= next_state;
 end
 
-
-reg [7:0] pix_cnt;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        in_valid_d1 <= 1'b0;
+    else
+        in_valid_d1 <= in_valid;
+end
 
 always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+    if (!rst_n)
+        param_valid_d1 <= 1'b0;
+    else
+        param_valid_d1 <= param_valid;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
         param_cnt <= 8'd0;
-    end
-    else if (curr_state != LOAD_PARAM) begin
-        param_cnt <= 8'd0;
-    end
     else if (param_valid) begin
         gain_mem[param_cnt] <= param_gain;
         param_cnt <= param_cnt + 8'd1;
     end
+    else if (curr_state == IDLE)
+        param_cnt <= 8'd0;
 end
-//------------------------------
-//   BLC 
-//------------------------------
 
-
-
-// 1. 座標計數器：追蹤目前輸入像素在 16x16 矩陣中的位置
 always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        row_cnt <= 4'd0;
-        col_cnt <= 4'd0;
-    end
-    else if (in_valid) begin
-        if (col_cnt == 4'd15) begin
-            col_cnt <= 4'd0;
-            row_cnt <= row_cnt + 4'd1;
-        end
-        else begin
-            col_cnt <= col_cnt + 4'd1;
-        end
-    end
-    else if (curr_state == IDLE) begin // 每一幀開始前清零
-        row_cnt <= 4'd0;
-        col_cnt <= 4'd0;
-    end
+    if (!rst_n)
+        blc_cnt <= 8'd0;
+    else if (blc_fire_w)
+        blc_cnt <= blc_cnt + 8'd1;
+    else if (curr_state == IDLE)
+        blc_cnt <= 8'd0;
 end
 
-// 2. 顏色通道判斷與 Offset 選擇
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        blc_done_r <= 1'b0;
+    else if (curr_state != RUN_BLC)
+        blc_done_r <= 1'b0;
+    else if (in_valid_d1 && !in_valid)
+        blc_done_r <= 1'b1;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        row_cnt <= 4'd0;
+    else if (blc_fire_w && col_cnt == 4'd15)
+        row_cnt <= row_cnt + 4'd1;
+    else if (curr_state == IDLE)
+        row_cnt <= 4'd0;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        col_cnt <= 4'd0;
+    else if (blc_fire_w && col_cnt == 4'd15)
+        col_cnt <= 4'd0;
+    else if (blc_fire_w)
+        col_cnt <= col_cnt + 4'd1;
+    else if (curr_state == IDLE)
+        col_cnt <= 4'd0;
+end
+
 always @(*) begin
     case ({row_cnt[0], col_cnt[0]})
-        2'b00: b_offset = 7'd64; // R (Even row, Even col)
-        2'b01: b_offset = 7'd48; // Gr (Even row, Odd col)
-        2'b10: b_offset = 7'd52; // Gb (Odd row, Even col)
-        2'b11: b_offset = 7'd72; // B (Odd row, Odd col)
-        default: b_offset = 7'd0;
+        2'b00: b_offset = 7'd64;
+        2'b01: b_offset = 7'd48;
+        2'b10: b_offset = 7'd52;
+        default: b_offset = 7'd72;
     endcase
 end
 
-// 3. 減法運算與數值截斷 (Saturation)
-// 使用暫存器傳遞到下一階段 (Pipeline stage)
 always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        blc_out_r <= 12'd0;
-        blc_out_vld_r <= 1'b0;
-    end
-    else if (in_valid) begin
-        blc_out_vld_r <= 1'b1;
-        // 如果輸入小於 offset，結果須為 0 (max 運算)
-        if (in > b_offset)
-            blc_out_r <= in - b_offset;
-        else
-            blc_out_r <= 12'd0;
-    end
-    else begin
-        blc_out_vld_r <= 1'b0;
-        blc_out_r <= 12'd0;
-    end
+    if (!rst_n)
+        lsc_cnt <= 8'd0;
+    else if (curr_state == LSC_RUN)
+        lsc_cnt <= lsc_cnt + 8'd1;
+    else
+        lsc_cnt <= 8'd0;
 end
 
-
-
-
-// 在 BLC 區塊新增寫入邏輯
-always @(posedge clk) begin
-    if (curr_state == DATA_IN && in_valid) begin
-        // 使用 {row_cnt, col_cnt} 作為地址 (4-bit + 4-bit = 8-bit, 剛好 0~255)
-        if (in > b_offset)
-            blc_buffer[{row_cnt, col_cnt}] <= in - b_offset; 
-        else
-            blc_buffer[{row_cnt, col_cnt}] <= 12'd0; 
-    end
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        ccm_cnt <= 8'd0;
+    else if (curr_state == RUN_CCM)
+        ccm_cnt <= ccm_cnt + 8'd1;
+    else
+        ccm_cnt <= 8'd0;
 end
 
-// 在 Design 的最後部分加入輸出控制
 always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        out_valid <= 1'b0;
-        {r_out, g_out, b_out} <= 36'd0;
+    if (!rst_n)
         out_cnt <= 8'd0;
-    end
-    else if (next_state == DATA_OUT) begin // 使用 next_state 減少一週期延遲
-        out_valid <= 1'b1;
-        r_out <= blc_buffer[out_cnt];
-        g_out <= blc_buffer[out_cnt];
-        b_out <= blc_buffer[out_cnt];
+    else if (curr_state == DATA_OUT)
         out_cnt <= out_cnt + 8'd1;
-    end
-    else begin
-        out_valid <= 1'b0;
-        {r_out, g_out, b_out} <= 36'd0; 
+    else
         out_cnt <= 8'd0;
+end
+
+// BLC: each valid input writes one corrected pixel, then blc_cnt increments.
+always @(posedge clk) begin
+    if (blc_fire_w) begin
+        if (in > b_offset)
+            blc_buffer[blc_cnt] <= in - b_offset;
+        else
+            blc_buffer[blc_cnt] <= 12'd0;
     end
 end
 
+// LSC: lookup x0/rx/y0/ry and dx/ix/dy/iy in the same cycle, then fetch g00/g01/g10/g11.
+always @(*) begin
+    x_now = lsc_cnt[3:0];
+    y_now = lsc_cnt[7:4];
+
+    case (x_now)
+        4'd0:  begin x0_w = 3'd0; rx_w = 2'd0; end
+        4'd1:  begin x0_w = 3'd0; rx_w = 2'd1; end
+        4'd2:  begin x0_w = 3'd0; rx_w = 2'd2; end
+        4'd3:  begin x0_w = 3'd1; rx_w = 2'd0; end
+        4'd4:  begin x0_w = 3'd1; rx_w = 2'd1; end
+        4'd5:  begin x0_w = 3'd1; rx_w = 2'd2; end
+        4'd6:  begin x0_w = 3'd2; rx_w = 2'd0; end
+        4'd7:  begin x0_w = 3'd2; rx_w = 2'd1; end
+        4'd8:  begin x0_w = 3'd2; rx_w = 2'd2; end
+        4'd9:  begin x0_w = 3'd3; rx_w = 2'd0; end
+        4'd10: begin x0_w = 3'd3; rx_w = 2'd1; end
+        4'd11: begin x0_w = 3'd3; rx_w = 2'd2; end
+        4'd12: begin x0_w = 3'd4; rx_w = 2'd0; end
+        4'd13: begin x0_w = 3'd4; rx_w = 2'd1; end
+        default: begin x0_w = 3'd4; rx_w = 2'd2; end
+    endcase
+
+    case (rx_w)
+        2'd0: begin dx_w = 9'd0;   ix_w = 9'd256; end
+        2'd1: begin dx_w = 9'd85;  ix_w = 9'd171; end
+        2'd2: begin dx_w = 9'd171; ix_w = 9'd85;  end
+        default: begin dx_w = 9'd0; ix_w = 9'd256; end
+    endcase
+
+    case (y_now)
+        4'd0:  begin y0_w = 3'd0; ry_w = 2'd0; end
+        4'd1:  begin y0_w = 3'd0; ry_w = 2'd1; end
+        4'd2:  begin y0_w = 3'd0; ry_w = 2'd2; end
+        4'd3:  begin y0_w = 3'd1; ry_w = 2'd0; end
+        4'd4:  begin y0_w = 3'd1; ry_w = 2'd1; end
+        4'd5:  begin y0_w = 3'd1; ry_w = 2'd2; end
+        4'd6:  begin y0_w = 3'd2; ry_w = 2'd0; end
+        4'd7:  begin y0_w = 3'd2; ry_w = 2'd1; end
+        4'd8:  begin y0_w = 3'd2; ry_w = 2'd2; end
+        4'd9:  begin y0_w = 3'd3; ry_w = 2'd0; end
+        4'd10: begin y0_w = 3'd3; ry_w = 2'd1; end
+        4'd11: begin y0_w = 3'd3; ry_w = 2'd2; end
+        4'd12: begin y0_w = 3'd4; ry_w = 2'd0; end
+        4'd13: begin y0_w = 3'd4; ry_w = 2'd1; end
+        default: begin y0_w = 3'd4; ry_w = 2'd2; end
+    endcase
+
+    case (ry_w)
+        2'd0: begin dy_w = 9'd0;   iy_w = 9'd256; end
+        2'd1: begin dy_w = 9'd85;  iy_w = 9'd171; end
+        2'd2: begin dy_w = 9'd171; iy_w = 9'd85;  end
+        default: begin dy_w = 9'd0; iy_w = 9'd256; end
+    endcase
+
+    idx00_w = y0_w * 6 + x0_w;
+    idx01_w = y0_w * 6 + x0_w + 1'b1;
+    idx10_w = (y0_w + 1'b1) * 6 + x0_w;
+    idx11_w = (y0_w + 1'b1) * 6 + x0_w + 1'b1;
+
+    case ({y_now[0], x_now[0]})
+        2'b00: begin
+            g00_w = gain_mem[idx00_w];
+            g01_w = gain_mem[idx01_w];
+            g10_w = gain_mem[idx10_w];
+            g11_w = gain_mem[idx11_w];
+        end
+        2'b01: begin
+            g00_w = gain_mem[idx00_w + 6'd36];
+            g01_w = gain_mem[idx01_w + 6'd36];
+            g10_w = gain_mem[idx10_w + 6'd36];
+            g11_w = gain_mem[idx11_w + 6'd36];
+        end
+        2'b10: begin
+            g00_w = gain_mem[idx00_w + 7'd72];
+            g01_w = gain_mem[idx01_w + 7'd72];
+            g10_w = gain_mem[idx10_w + 7'd72];
+            g11_w = gain_mem[idx11_w + 7'd72];
+        end
+        default: begin
+            g00_w = gain_mem[idx00_w + 7'd108];
+            g01_w = gain_mem[idx01_w + 7'd108];
+            g10_w = gain_mem[idx10_w + 7'd108];
+            g11_w = gain_mem[idx11_w + 7'd108];
+        end
+    endcase
+end
+
+// LSC: calculate G(x,y), then apply it to P(x,y).
+always @(*) begin
+    gain_accum_w = (g00_w * ix_w * iy_w) +
+                   (g10_w * ix_w * dy_w) +
+                   (g01_w * dx_w * iy_w) +
+                   (g11_w * dx_w * dy_w) +
+                   32'd32768;
+    gain_w = gain_accum_w[31:16];
+
+    lsc_accum_w = (blc_buffer[lsc_cnt] * gain_w) + 32'd512;
+    if (lsc_accum_w[31:22] != 0)
+        lsc_pixel_w = 12'd4095;
+    else
+        lsc_pixel_w = lsc_accum_w[21:10];
+end
+
+always @(posedge clk) begin
+    if (curr_state == LSC_RUN)
+        lsc_buffer[lsc_cnt] <= lsc_pixel_w;
+end
+
+// CCM: calculate one RGB output from one LSC pixel.
+always @(*) begin
+    ccm_r_raw_w = ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_RR)
+                - ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_RG)
+                - ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_RB)
+                + 24'sd512;
+    ccm_g_raw_w = ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_GR)
+                + ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_GG)
+                - ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_GB)
+                + 24'sd512;
+    ccm_b_raw_w = ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_BR)
+                + ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_BG)
+                + ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_BB)
+                + 24'sd512;
+
+    ccm_r_w = clamp_u12(ccm_r_raw_w);
+    ccm_g_w = clamp_u12(ccm_g_raw_w);
+    ccm_b_w = clamp_u12(ccm_b_raw_w);
+end
+
+always @(posedge clk) begin
+    if (curr_state == RUN_CCM) begin
+        ccm_r_buffer[ccm_cnt] <= ccm_r_w;
+        ccm_g_buffer[ccm_cnt] <= ccm_g_w;
+        ccm_b_buffer[ccm_cnt] <= ccm_b_w;
+    end
+end
+
+// Output 256 RGB pixels after all stages finish.
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        out_valid <= 1'b0;
+        r_out     <= 12'd0;
+        g_out     <= 12'd0;
+        b_out     <= 12'd0;
+    end
+    else if (curr_state == DATA_OUT) begin
+        out_valid <= 1'b1;
+        r_out     <= ccm_r_buffer[out_cnt];
+        g_out     <= ccm_g_buffer[out_cnt];
+        b_out     <= ccm_b_buffer[out_cnt];
+    end
+    else begin
+        out_valid <= 1'b0;
+        r_out     <= 12'd0;
+        g_out     <= 12'd0;
+        b_out     <= 12'd0;
+    end
+end
 
 endmodule
