@@ -39,6 +39,7 @@ localparam RUN_BLC    = 4'd2;
 localparam LSC_RUN    = 4'd3;
 localparam RUN_CCM    = 4'd4;
 localparam DATA_OUT   = 4'd5;
+localparam RUN_DPC    = 4'd6;
 
 localparam signed [11:0] CCM_RR = 12'sd1100;
 localparam signed [11:0] CCM_RG = 12'sd50;
@@ -57,12 +58,14 @@ reg [7:0] param_cnt;
 reg [7:0] blc_cnt;
 reg       blc_done_r;
 reg [7:0] lsc_cnt;
+reg [7:0] dpc_cnt;
 reg [7:0] ccm_cnt;
 reg [7:0] out_cnt;
 
 reg [11:0] gain_mem     [0:143];
 reg [11:0] blc_buffer   [0:255];
 reg [11:0] lsc_buffer   [0:255];
+reg [11:0] dpc_buffer   [0:255];
 reg [11:0] ccm_r_buffer [0:255];
 reg [11:0] ccm_g_buffer [0:255];
 reg [11:0] ccm_b_buffer [0:255];
@@ -79,15 +82,25 @@ reg [31:0] gain_accum_w;
 reg [11:0] gain_w;
 reg [31:0] lsc_accum_w;
 reg [11:0] lsc_pixel_w;
+reg [3:0] dpc_x_now, dpc_y_now;
+reg [11:0] dpc_p_w;
+reg [11:0] dpc_h_med_w, dpc_v_med_w, dpc_d1_med_w, dpc_d2_med_w;
+reg [13:0] dpc_h_sad_w, dpc_v_sad_w, dpc_d1_sad_w, dpc_d2_sad_w;
+reg [11:0] dpc_target_w, dpc_pixel_w;
 reg signed [23:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
 reg [11:0] ccm_r_w, ccm_g_w, ccm_b_w;
 
 wire param_done_w;
 wire blc_done_w;
 wire lsc_done_w;
+wire dpc_done_w;
 wire ccm_done_w;
 wire out_done_w;
 wire blc_fire_w;
+wire [11:0] dpc_h0_w, dpc_h1_w, dpc_h2_w, dpc_h3_w;
+wire [11:0] dpc_v0_w, dpc_v1_w, dpc_v2_w, dpc_v3_w;
+wire [11:0] dpc_d10_w, dpc_d11_w, dpc_d12_w, dpc_d13_w;
+wire [11:0] dpc_d20_w, dpc_d21_w, dpc_d22_w, dpc_d23_w;
 
 function [11:0] clamp_u12;
     input signed [23:0] val;
@@ -101,12 +114,94 @@ function [11:0] clamp_u12;
     end
 endfunction
 
+function [7:0] get_lsc_idx;
+    input [3:0] x_target;
+    input [3:0] y_target;
+    input signed [2:0] dx;
+    input signed [2:0] dy;
+    reg [3:0] final_x, final_y;
+    integer temp_x, temp_y;
+    begin
+        temp_x = $signed({1'b0, x_target}) + dx;
+        temp_y = $signed({1'b0, y_target}) + dy;
+
+        if (temp_x < 0)
+            final_x = -temp_x;
+        else if (temp_x > 15)
+            final_x = 30 - temp_x;
+        else
+            final_x = temp_x;
+
+        if (temp_y < 0)
+            final_y = -temp_y;
+        else if (temp_y > 15)
+            final_y = 30 - temp_y;
+        else
+            final_y = temp_y;
+
+        get_lsc_idx = {final_y[3:0], final_x[3:0]};
+    end
+endfunction
+
+function [11:0] median4_avg_u12;
+    input [11:0] a;
+    input [11:0] b;
+    input [11:0] c;
+    input [11:0] d;
+    reg [11:0] s0, s1, s2, s3, tmp;
+    reg [12:0] mid_sum;
+    begin
+        s0 = a;
+        s1 = b;
+        s2 = c;
+        s3 = d;
+
+        if (s0 > s1) begin tmp = s0; s0 = s1; s1 = tmp; end
+        if (s2 > s3) begin tmp = s2; s2 = s3; s3 = tmp; end
+        if (s0 > s2) begin tmp = s0; s0 = s2; s2 = tmp; end
+        if (s1 > s3) begin tmp = s1; s1 = s3; s3 = tmp; end
+        if (s1 > s2) begin tmp = s1; s1 = s2; s2 = tmp; end
+
+        mid_sum = s1 + s2;
+        median4_avg_u12 = mid_sum[12:1];
+    end
+endfunction
+
+function [12:0] abs_diff_u12;
+    input [11:0] a;
+    input [11:0] b;
+    begin
+        if (a >= b)
+            abs_diff_u12 = a - b;
+        else
+            abs_diff_u12 = b - a;
+    end
+endfunction
+
 assign param_done_w = param_valid_d1 && !param_valid;
 assign blc_fire_w   = in_valid;
 assign blc_done_w   = blc_done_r;
 assign lsc_done_w   = (curr_state == LSC_RUN) && (lsc_cnt == 8'd255);
+assign dpc_done_w   = (curr_state == RUN_DPC)  && (dpc_cnt  == 8'd255);
 assign ccm_done_w   = (curr_state == RUN_CCM)  && (ccm_cnt  == 8'd255);
 assign out_done_w   = (curr_state == DATA_OUT) && (out_cnt  == 8'd255);
+
+assign dpc_h0_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd0)];
+assign dpc_h1_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd0)];
+assign dpc_h2_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd0)];
+assign dpc_h3_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd0)];
+assign dpc_v0_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd2)];
+assign dpc_v1_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd1)];
+assign dpc_v2_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd1)];
+assign dpc_v3_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd2)];
+assign dpc_d10_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2, -3'sd2)];
+assign dpc_d11_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1, -3'sd1)];
+assign dpc_d12_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd1)];
+assign dpc_d13_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd2)];
+assign dpc_d20_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2, -3'sd2)];
+assign dpc_d21_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1, -3'sd1)];
+assign dpc_d22_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd1)];
+assign dpc_d23_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd2)];
 
 always @(*) begin
     next_state = curr_state;
@@ -127,6 +222,10 @@ always @(*) begin
         end
         LSC_RUN: begin
             if (lsc_done_w)
+                next_state = RUN_DPC;
+        end
+        RUN_DPC: begin
+            if (dpc_done_w)
                 next_state = RUN_CCM;
         end
         RUN_CCM: begin
@@ -236,6 +335,15 @@ always @(posedge clk or negedge rst_n) begin
         ccm_cnt <= ccm_cnt + 8'd1;
     else
         ccm_cnt <= 8'd0;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        dpc_cnt <= 8'd0;
+    else if (curr_state == RUN_DPC)
+        dpc_cnt <= dpc_cnt + 8'd1;
+    else
+        dpc_cnt <= 8'd0;
 end
 
 always @(posedge clk or negedge rst_n) begin
@@ -366,19 +474,67 @@ always @(posedge clk) begin
         lsc_buffer[lsc_cnt] <= lsc_pixel_w;
 end
 
+// DPC: form 4 directions, compare SAD, and replace the center pixel if it differs from target by more than 320.
+always @(*) begin
+    dpc_x_now = dpc_cnt[3:0];
+    dpc_y_now = dpc_cnt[7:4];
+    dpc_p_w   = lsc_buffer[dpc_cnt];
+
+    dpc_h_med_w  = median4_avg_u12(dpc_h0_w,  dpc_h1_w,  dpc_h2_w,  dpc_h3_w);
+    dpc_v_med_w  = median4_avg_u12(dpc_v0_w,  dpc_v1_w,  dpc_v2_w,  dpc_v3_w);
+    dpc_d1_med_w = median4_avg_u12(dpc_d10_w, dpc_d11_w, dpc_d12_w, dpc_d13_w);
+    dpc_d2_med_w = median4_avg_u12(dpc_d20_w, dpc_d21_w, dpc_d22_w, dpc_d23_w);
+
+    dpc_h_sad_w  = abs_diff_u12(dpc_h0_w,  dpc_h_med_w)  + abs_diff_u12(dpc_h1_w,  dpc_h_med_w)  +
+                   abs_diff_u12(dpc_h2_w,  dpc_h_med_w)  + abs_diff_u12(dpc_h3_w,  dpc_h_med_w);
+    dpc_v_sad_w  = abs_diff_u12(dpc_v0_w,  dpc_v_med_w)  + abs_diff_u12(dpc_v1_w,  dpc_v_med_w)  +
+                   abs_diff_u12(dpc_v2_w,  dpc_v_med_w)  + abs_diff_u12(dpc_v3_w,  dpc_v_med_w);
+    dpc_d1_sad_w = abs_diff_u12(dpc_d10_w, dpc_d1_med_w) + abs_diff_u12(dpc_d11_w, dpc_d1_med_w) +
+                   abs_diff_u12(dpc_d12_w, dpc_d1_med_w) + abs_diff_u12(dpc_d13_w, dpc_d1_med_w);
+    dpc_d2_sad_w = abs_diff_u12(dpc_d20_w, dpc_d2_med_w) + abs_diff_u12(dpc_d21_w, dpc_d2_med_w) +
+                   abs_diff_u12(dpc_d22_w, dpc_d2_med_w) + abs_diff_u12(dpc_d23_w, dpc_d2_med_w);
+
+    // Default to H, then apply the tie-break priority H > V > D1 > D2.
+    dpc_target_w = dpc_h_med_w;
+    if (dpc_v_sad_w < dpc_h_sad_w) begin
+        if ((dpc_v_sad_w <= dpc_d1_sad_w) && (dpc_v_sad_w <= dpc_d2_sad_w))
+            dpc_target_w = dpc_v_med_w;
+        else if ((dpc_d1_sad_w < dpc_v_sad_w) && (dpc_d1_sad_w <= dpc_d2_sad_w))
+            dpc_target_w = dpc_d1_med_w;
+        else
+            dpc_target_w = dpc_d2_med_w;
+    end
+    else begin
+        if ((dpc_d1_sad_w < dpc_h_sad_w) && (dpc_d1_sad_w <= dpc_d2_sad_w))
+            dpc_target_w = dpc_d1_med_w;
+        else if ((dpc_d2_sad_w < dpc_h_sad_w) && (dpc_d2_sad_w < dpc_d1_sad_w))
+            dpc_target_w = dpc_d2_med_w;
+    end
+
+    if (abs_diff_u12(dpc_p_w, dpc_target_w) > 13'd320)
+        dpc_pixel_w = dpc_target_w;
+    else
+        dpc_pixel_w = dpc_p_w;
+end
+
+always @(posedge clk) begin
+    if (curr_state == RUN_DPC)
+        dpc_buffer[dpc_cnt] <= dpc_pixel_w;
+end
+
 // CCM: calculate one RGB output from one LSC pixel.
 always @(*) begin
-    ccm_r_raw_w = ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_RR)
-                - ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_RG)
-                - ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_RB)
+    ccm_r_raw_w = ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_RR)
+                - ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_RG)
+                - ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_RB)
                 + 24'sd512;
-    ccm_g_raw_w = ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_GR)
-                + ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_GG)
-                - ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_GB)
+    ccm_g_raw_w = ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_GR)
+                + ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_GG)
+                - ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_GB)
                 + 24'sd512;
-    ccm_b_raw_w = ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_BR)
-                + ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_BG)
-                + ($signed({1'b0, lsc_buffer[ccm_cnt]}) * CCM_BB)
+    ccm_b_raw_w = ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_BR)
+                + ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_BG)
+                + ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_BB)
                 + 24'sd512;
 
     ccm_r_w = clamp_u12(ccm_r_raw_w);

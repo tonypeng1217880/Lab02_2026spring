@@ -65,6 +65,8 @@ command.log
 alib-*/
 *.db.alib
 
+BSSLib.lib++
+*.lib++
 # reports that regenerate
 Report/*.rpt
 
