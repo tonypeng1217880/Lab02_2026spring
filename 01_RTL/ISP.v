@@ -58,24 +58,28 @@ reg       param_valid_d1;
 reg [7:0] param_cnt;
 reg [7:0] blc_cnt;
 reg       blc_done_r;
+reg       blc_started;
 reg [7:0] lsc_cnt;
 reg [7:0] dpc_cnt;
 reg [7:0] demo_cnt;
-reg [7:0] ccm_cnt;
 reg [7:0] out_cnt;
 
 reg [11:0] gain_mem     [0:143];
-reg [11:0] blc_buffer   [0:255];
-reg [11:0] lsc_buffer   [0:255];
+reg [11:0] main_buffer  [0:255];
 reg [11:0] dpc_buffer   [0:255];
 reg [11:0] demo_r_buffer [0:255];
 reg [11:0] demo_g_buffer [0:255];
 reg [11:0] demo_b_buffer [0:255];
-reg [11:0] ccm_r_buffer [0:255];
-reg [11:0] ccm_g_buffer [0:255];
-reg [11:0] ccm_b_buffer [0:255];
 reg [3:0] row_cnt, col_cnt;
 reg [6:0] b_offset;
+reg [11:0] blc_p_s1;
+reg [7:0]  idx_s1;
+reg [3:0]  x_s1, y_s1;
+reg        vld_s1;
+reg [11:0] blc_p_s2;
+reg [11:0] gain_s2;
+reg [7:0]  idx_s2;
+reg        vld_s2;
 
 reg [3:0] x_now, y_now;
 reg [2:0] x0_w, y0_w;
@@ -105,13 +109,13 @@ reg [13:0] sum4_w;
 reg [11:0] demo_r_w, demo_g_w, demo_b_w;
 reg signed [25:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
 reg [11:0] ccm_r_w, ccm_g_w, ccm_b_w;
+reg [11:0] blc_pixel_w;
 
 wire param_done_w;
 wire blc_done_w;
 wire lsc_done_w;
 wire dpc_done_w;
 wire demo_done_w;
-wire ccm_done_w;
 wire out_done_w;
 wire blc_fire_w;
 wire [11:0] dpc_h0_w, dpc_h1_w, dpc_h2_w, dpc_h3_w;
@@ -226,29 +230,28 @@ endfunction
 
 assign param_done_w = param_valid_d1 && !param_valid;
 assign blc_fire_w   = in_valid;
-assign blc_done_w   = blc_done_r;
+assign blc_done_w   = (curr_state == RUN_BLC) && blc_started && !in_valid && !vld_s1 && !vld_s2;
 assign lsc_done_w   = (curr_state == LSC_RUN) && (lsc_cnt == 8'd255);
 assign dpc_done_w   = (curr_state == RUN_DPC)  && (dpc_cnt  == 8'd255);
 assign demo_done_w  = (curr_state == RUN_DEMOSAIC) && (demo_cnt == 8'd255);
-assign ccm_done_w   = (curr_state == RUN_CCM)  && (ccm_cnt  == 8'd255);
 assign out_done_w   = (curr_state == DATA_OUT) && (out_cnt  == 8'd255);
 
-assign dpc_h0_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd0)];
-assign dpc_h1_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd0)];
-assign dpc_h2_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd0)];
-assign dpc_h3_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd0)];
-assign dpc_v0_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd2)];
-assign dpc_v1_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd1)];
-assign dpc_v2_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd1)];
-assign dpc_v3_w  = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd2)];
-assign dpc_d10_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2, -3'sd2)];
-assign dpc_d11_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1, -3'sd1)];
-assign dpc_d12_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd1)];
-assign dpc_d13_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd2)];
-assign dpc_d20_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2, -3'sd2)];
-assign dpc_d21_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1, -3'sd1)];
-assign dpc_d22_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd1)];
-assign dpc_d23_w = lsc_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd2)];
+assign dpc_h0_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd0)];
+assign dpc_h1_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd0)];
+assign dpc_h2_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd0)];
+assign dpc_h3_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd0)];
+assign dpc_v0_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd2)];
+assign dpc_v1_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd1)];
+assign dpc_v2_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd1)];
+assign dpc_v3_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd2)];
+assign dpc_d10_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2, -3'sd2)];
+assign dpc_d11_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1, -3'sd1)];
+assign dpc_d12_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd1)];
+assign dpc_d13_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd2)];
+assign dpc_d20_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2, -3'sd2)];
+assign dpc_d21_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1, -3'sd1)];
+assign dpc_d22_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd1)];
+assign dpc_d23_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd2)];
 
 always @(*) begin
     next_state = curr_state;
@@ -265,11 +268,10 @@ always @(*) begin
         end
         RUN_BLC: begin
             if (blc_done_w)
-                next_state = LSC_RUN;
+                next_state = RUN_DPC;
         end
         LSC_RUN: begin
-            if (lsc_done_w)
-                next_state = RUN_DPC;
+            next_state = RUN_DPC;
         end
         RUN_DPC: begin
             if (dpc_done_w)
@@ -277,10 +279,6 @@ always @(*) begin
         end
         RUN_DEMOSAIC: begin
             if (demo_done_w)
-                next_state = RUN_CCM;
-        end
-        RUN_CCM: begin
-            if (ccm_done_w)
                 next_state = DATA_OUT;
         end
         DATA_OUT: begin
@@ -334,6 +332,15 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
+        blc_started <= 1'b0;
+    else if (curr_state == IDLE)
+        blc_started <= 1'b0;
+    else if (curr_state == RUN_BLC && in_valid)
+        blc_started <= 1'b1;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
         blc_done_r <= 1'b0;
     else if (curr_state != RUN_BLC)
         blc_done_r <= 1'b0;
@@ -381,15 +388,6 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
-        ccm_cnt <= 8'd0;
-    else if (curr_state == RUN_CCM)
-        ccm_cnt <= ccm_cnt + 8'd1;
-    else
-        ccm_cnt <= 8'd0;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
         dpc_cnt <= 8'd0;
     else if (curr_state == RUN_DPC)
         dpc_cnt <= dpc_cnt + 8'd1;
@@ -415,20 +413,55 @@ always @(posedge clk or negedge rst_n) begin
         out_cnt <= 8'd0;
 end
 
-// BLC: each valid input writes one corrected pixel, then blc_cnt increments.
-always @(posedge clk) begin
-    if (blc_fire_w) begin
-        if (in > b_offset)
-            blc_buffer[blc_cnt] <= in - b_offset;
-        else
-            blc_buffer[blc_cnt] <= 12'd0;
+always @(*) begin
+    if (in > b_offset)
+        blc_pixel_w = in - b_offset;
+    else
+        blc_pixel_w = 12'd0;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        blc_p_s1 <= 12'd0;
+        idx_s1   <= 8'd0;
+        x_s1     <= 4'd0;
+        y_s1     <= 4'd0;
+        vld_s1   <= 1'b0;
+        blc_p_s2 <= 12'd0;
+        gain_s2  <= 12'd0;
+        idx_s2   <= 8'd0;
+        vld_s2   <= 1'b0;
+    end
+    else if ((curr_state == RUN_BLC) || in_valid || vld_s1 || vld_s2) begin
+        if (vld_s2)
+            main_buffer[idx_s2] <= lsc_pixel_w;
+
+        blc_p_s2 <= blc_p_s1;
+        gain_s2  <= gain_w;
+        idx_s2   <= idx_s1;
+        vld_s2   <= vld_s1;
+
+        if (in_valid) begin
+            blc_p_s1 <= blc_pixel_w;
+            idx_s1   <= blc_cnt;
+            x_s1     <= col_cnt;
+            y_s1     <= row_cnt;
+            vld_s1   <= 1'b1;
+        end
+        else begin
+            vld_s1 <= 1'b0;
+        end
+    end
+    else begin
+        vld_s1 <= 1'b0;
+        vld_s2 <= 1'b0;
     end
 end
 
 // LSC: lookup x0/rx/y0/ry and dx/ix/dy/iy in the same cycle, then fetch g00/g01/g10/g11.
 always @(*) begin
-    x_now = lsc_cnt[3:0];
-    y_now = lsc_cnt[7:4];
+    x_now = x_s1;
+    y_now = y_s1;
 
     case (x_now)
         4'd0:  begin x0_w = 3'd0; rx_w = 2'd0; end
@@ -512,23 +545,18 @@ always @(*) begin
                    32'd32768;
     gain_w = gain_accum_w[31:16];
 
-    lsc_accum_w = (blc_buffer[lsc_cnt] * gain_w) + 32'd512;
+    lsc_accum_w = (blc_p_s2 * gain_s2) + 32'd512;
     if (lsc_accum_w[31:22] != 0)
         lsc_pixel_w = 12'd4095;
     else
         lsc_pixel_w = lsc_accum_w[21:10];
 end
 
-always @(posedge clk) begin
-    if (curr_state == LSC_RUN)
-        lsc_buffer[lsc_cnt] <= lsc_pixel_w;
-end
-
 // DPC: form 4 directions, compare SAD, and replace the center pixel if it differs from target by more than 320.
 always @(*) begin
     dpc_x_now = dpc_cnt[3:0];
     dpc_y_now = dpc_cnt[7:4];
-    dpc_p_w   = lsc_buffer[dpc_cnt];
+    dpc_p_w   = main_buffer[dpc_cnt];
 
     dpc_h_med_w  = median4_avg_u12(dpc_h0_w,  dpc_h1_w,  dpc_h2_w,  dpc_h3_w);
     dpc_v_med_w  = median4_avg_u12(dpc_v0_w,  dpc_v1_w,  dpc_v2_w,  dpc_v3_w);
@@ -629,30 +657,22 @@ end
 
 // CCM: calculate one RGB output from one LSC pixel.
 always @(*) begin
-    ccm_r_raw_w = ($signed({1'b0, demo_r_buffer[ccm_cnt]}) * C11)
-                + ($signed({1'b0, demo_g_buffer[ccm_cnt]}) * C12)
-                + ($signed({1'b0, demo_b_buffer[ccm_cnt]}) * C13)
+    ccm_r_raw_w = ($signed({1'b0, demo_r_buffer[out_cnt]}) * C11)
+                + ($signed({1'b0, demo_g_buffer[out_cnt]}) * C12)
+                + ($signed({1'b0, demo_b_buffer[out_cnt]}) * C13)
                 + 26'sd512;
-    ccm_g_raw_w = ($signed({1'b0, demo_r_buffer[ccm_cnt]}) * C21)
-                + ($signed({1'b0, demo_g_buffer[ccm_cnt]}) * C22)
-                + ($signed({1'b0, demo_b_buffer[ccm_cnt]}) * C23)
+    ccm_g_raw_w = ($signed({1'b0, demo_r_buffer[out_cnt]}) * C21)
+                + ($signed({1'b0, demo_g_buffer[out_cnt]}) * C22)
+                + ($signed({1'b0, demo_b_buffer[out_cnt]}) * C23)
                 + 26'sd512;
-    ccm_b_raw_w = ($signed({1'b0, demo_r_buffer[ccm_cnt]}) * C31)
-                + ($signed({1'b0, demo_g_buffer[ccm_cnt]}) * C32)
-                + ($signed({1'b0, demo_b_buffer[ccm_cnt]}) * C33)
+    ccm_b_raw_w = ($signed({1'b0, demo_r_buffer[out_cnt]}) * C31)
+                + ($signed({1'b0, demo_g_buffer[out_cnt]}) * C32)
+                + ($signed({1'b0, demo_b_buffer[out_cnt]}) * C33)
                 + 26'sd512;
 
     ccm_r_w = clamp_u12(ccm_r_raw_w >>> 10);
     ccm_g_w = clamp_u12(ccm_g_raw_w >>> 10);
     ccm_b_w = clamp_u12(ccm_b_raw_w >>> 10);
-end
-
-always @(posedge clk) begin
-    if (curr_state == RUN_CCM) begin
-        ccm_r_buffer[ccm_cnt] <= ccm_r_w;
-        ccm_g_buffer[ccm_cnt] <= ccm_g_w;
-        ccm_b_buffer[ccm_cnt] <= ccm_b_w;
-    end
 end
 
 // Output 256 RGB pixels after all stages finish.
@@ -665,9 +685,9 @@ always @(posedge clk or negedge rst_n) begin
     end
     else if (curr_state == DATA_OUT) begin
         out_valid <= 1'b1;
-        r_out     <= ccm_r_buffer[out_cnt];
-        g_out     <= ccm_g_buffer[out_cnt];
-        b_out     <= ccm_b_buffer[out_cnt];
+        r_out     <= ccm_r_w;
+        g_out     <= ccm_g_w;
+        b_out     <= ccm_b_w;
     end
     else begin
         out_valid <= 1'b0;
