@@ -8,7 +8,7 @@
 # (A) Global Parameters
 #======================================================
 set DESIGN "ISP"
-set CYCLE 20
+set CYCLE 10
 set INPUT_DLY [expr 0.5*$CYCLE]
 set OUTPUT_DLY [expr 0.5*$CYCLE]
 

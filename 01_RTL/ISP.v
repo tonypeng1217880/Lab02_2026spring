@@ -80,6 +80,7 @@ reg [1:0] rx_w, ry_w;
 reg [5:0] idx00_w, idx01_w, idx10_w, idx11_w;
 reg [11:0] g00_w, g01_w, g10_w, g11_w;
 reg [8:0] dx_w, ix_w, dy_w, iy_w;
+reg [21:0] gain_top_w, gain_bot_w;
 reg [31:0] gain_accum_w;
 reg [11:0] gain_w;
 reg [31:0] lsc_accum_w;
@@ -89,9 +90,19 @@ reg [11:0] dpc_p_w;
 reg [11:0] dpc_h_med_w, dpc_v_med_w, dpc_d1_med_w, dpc_d2_med_w;
 reg [13:0] dpc_h_sad_w, dpc_v_sad_w, dpc_d1_sad_w, dpc_d2_sad_w;
 reg [11:0] dpc_target_w, dpc_pixel_w;
+reg [13:0] dpc_best_sad_w;
+reg        dpc_vld_s1, dpc_vld_s2;
+reg        dpc_feed_done;
+reg [7:0]  dpc_idx_s1, dpc_idx_s2;
+reg [11:0] dpc_p_s1, dpc_p_s2;
+reg [11:0] dpc_h0_s1, dpc_h1_s1, dpc_h2_s1, dpc_h3_s1;
+reg [11:0] dpc_v0_s1, dpc_v1_s1, dpc_v2_s1, dpc_v3_s1;
+reg [11:0] dpc_d10_s1, dpc_d11_s1, dpc_d12_s1, dpc_d13_s1;
+reg [11:0] dpc_d20_s1, dpc_d21_s1, dpc_d22_s1, dpc_d23_s1;
+reg [11:0] dpc_h_med_s1, dpc_v_med_s1, dpc_d1_med_s1, dpc_d2_med_s1;
+reg [11:0] dpc_h_med_s2, dpc_v_med_s2, dpc_d1_med_s2, dpc_d2_med_s2;
+reg [13:0] dpc_h_sad_s2, dpc_v_sad_s2, dpc_d1_sad_s2, dpc_d2_sad_s2;
 reg [3:0] dx, dy;
-reg [7:0] idx_n, idx_s, idx_e, idx_w;
-reg [7:0] idx_nw, idx_ne, idx_sw, idx_se;
 reg [11:0] p_c;
 reg [11:0] p_n, p_s, p_e, p_w;
 reg [11:0] p_nw, p_ne, p_sw, p_se;
@@ -102,11 +113,8 @@ reg signed [25:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
 reg [11:0] ccm_r_w, ccm_g_w, ccm_b_w;
 reg [11:0] blc_pixel_w;
 reg [11:0] demo_r_s1, demo_g_s1, demo_b_s1;
-reg        out_vld_s1, out_vld_s2;
+reg        out_vld_s1;
 reg        out_feed_done;
-reg signed [24:0] ccm_r_mul0_s2, ccm_r_mul1_s2, ccm_r_mul2_s2;
-reg signed [24:0] ccm_g_mul0_s2, ccm_g_mul1_s2, ccm_g_mul2_s2;
-reg signed [24:0] ccm_b_mul0_s2, ccm_b_mul1_s2, ccm_b_mul2_s2;
 
 wire param_done_w;
 wire blc_done_w;
@@ -244,8 +252,8 @@ endfunction
 assign param_done_w = param_valid_d1 && !param_valid;
 assign blc_fire_w   = in_valid;
 assign blc_done_w   = (curr_state == RUN_BLC) && blc_started && !in_valid && !vld_s1 && !vld_s2;
-assign dpc_done_w   = (curr_state == RUN_DPC)  && (dpc_cnt  == 8'd255);
-assign out_done_w   = (curr_state == DATA_OUT) && out_feed_done && !out_vld_s1 && !out_vld_s2;
+assign dpc_done_w   = (curr_state == RUN_DPC) && dpc_feed_done && !dpc_vld_s1 && !dpc_vld_s2;
+assign out_done_w   = (curr_state == DATA_OUT) && out_feed_done && !out_vld_s1;
 
 assign dpc_h0_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd0)];
 assign dpc_h1_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd0)];
@@ -375,10 +383,21 @@ end
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
         dpc_cnt <= 8'd0;
-    else if (curr_state == RUN_DPC)
+    else if (curr_state != RUN_DPC)
+        dpc_cnt <= 8'd0;
+    else if (!dpc_feed_done && dpc_cnt != 8'd255)
         dpc_cnt <= dpc_cnt + 8'd1;
     else
-        dpc_cnt <= 8'd0;
+        dpc_cnt <= dpc_cnt;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        dpc_feed_done <= 1'b0;
+    else if (curr_state != RUN_DPC)
+        dpc_feed_done <= 1'b0;
+    else if (!dpc_feed_done && dpc_cnt == 8'd255)
+        dpc_feed_done <= 1'b1;
 end
 
 always @(*) begin
@@ -390,14 +409,7 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        blc_p_s1 <= 12'd0;
-        idx_s1   <= 8'd0;
-        x_s1     <= 4'd0;
-        y_s1     <= 4'd0;
         vld_s1   <= 1'b0;
-        blc_p_s2 <= 12'd0;
-        gain_s2  <= 12'd0;
-        idx_s2   <= 8'd0;
         vld_s2   <= 1'b0;
     end
     else if ((curr_state == RUN_BLC) || in_valid || vld_s1 || vld_s2) begin
@@ -516,10 +528,10 @@ end
 
 // LSC: calculate G(x,y), then apply it to P(x,y).
 always @(*) begin
-    gain_accum_w = (g00_w * ix_w * iy_w) +
-                   (g10_w * ix_w * dy_w) +
-                   (g01_w * dx_w * iy_w) +
-                   (g11_w * dx_w * dy_w) +
+    gain_top_w = (g00_w * ix_w) + (g01_w * dx_w);
+    gain_bot_w = (g10_w * ix_w) + (g11_w * dx_w);
+    gain_accum_w = (gain_top_w * iy_w) +
+                   (gain_bot_w * dy_w) +
                    32'd32768;
     gain_w = gain_accum_w[31:16];
 
@@ -541,41 +553,89 @@ always @(*) begin
     dpc_d1_med_w = median4_avg_u12(dpc_d10_w, dpc_d11_w, dpc_d12_w, dpc_d13_w);
     dpc_d2_med_w = median4_avg_u12(dpc_d20_w, dpc_d21_w, dpc_d22_w, dpc_d23_w);
 
-    dpc_h_sad_w  = abs_diff_u12(dpc_h0_w,  dpc_h_med_w)  + abs_diff_u12(dpc_h1_w,  dpc_h_med_w)  +
-                   abs_diff_u12(dpc_h2_w,  dpc_h_med_w)  + abs_diff_u12(dpc_h3_w,  dpc_h_med_w);
-    dpc_v_sad_w  = abs_diff_u12(dpc_v0_w,  dpc_v_med_w)  + abs_diff_u12(dpc_v1_w,  dpc_v_med_w)  +
-                   abs_diff_u12(dpc_v2_w,  dpc_v_med_w)  + abs_diff_u12(dpc_v3_w,  dpc_v_med_w);
-    dpc_d1_sad_w = abs_diff_u12(dpc_d10_w, dpc_d1_med_w) + abs_diff_u12(dpc_d11_w, dpc_d1_med_w) +
-                   abs_diff_u12(dpc_d12_w, dpc_d1_med_w) + abs_diff_u12(dpc_d13_w, dpc_d1_med_w);
-    dpc_d2_sad_w = abs_diff_u12(dpc_d20_w, dpc_d2_med_w) + abs_diff_u12(dpc_d21_w, dpc_d2_med_w) +
-                   abs_diff_u12(dpc_d22_w, dpc_d2_med_w) + abs_diff_u12(dpc_d23_w, dpc_d2_med_w);
+    dpc_h_sad_w  = abs_diff_u12(dpc_h0_s1,  dpc_h_med_s1)  + abs_diff_u12(dpc_h1_s1,  dpc_h_med_s1)  +
+                   abs_diff_u12(dpc_h2_s1,  dpc_h_med_s1)  + abs_diff_u12(dpc_h3_s1,  dpc_h_med_s1);
+    dpc_v_sad_w  = abs_diff_u12(dpc_v0_s1,  dpc_v_med_s1)  + abs_diff_u12(dpc_v1_s1,  dpc_v_med_s1)  +
+                   abs_diff_u12(dpc_v2_s1,  dpc_v_med_s1)  + abs_diff_u12(dpc_v3_s1,  dpc_v_med_s1);
+    dpc_d1_sad_w = abs_diff_u12(dpc_d10_s1, dpc_d1_med_s1) + abs_diff_u12(dpc_d11_s1, dpc_d1_med_s1) +
+                   abs_diff_u12(dpc_d12_s1, dpc_d1_med_s1) + abs_diff_u12(dpc_d13_s1, dpc_d1_med_s1);
+    dpc_d2_sad_w = abs_diff_u12(dpc_d20_s1, dpc_d2_med_s1) + abs_diff_u12(dpc_d21_s1, dpc_d2_med_s1) +
+                   abs_diff_u12(dpc_d22_s1, dpc_d2_med_s1) + abs_diff_u12(dpc_d23_s1, dpc_d2_med_s1);
 
-    // Default to H, then apply the tie-break priority H > V > D1 > D2.
-    dpc_target_w = dpc_h_med_w;
-    if (dpc_v_sad_w < dpc_h_sad_w) begin
-        if ((dpc_v_sad_w <= dpc_d1_sad_w) && (dpc_v_sad_w <= dpc_d2_sad_w))
-            dpc_target_w = dpc_v_med_w;
-        else if ((dpc_d1_sad_w < dpc_v_sad_w) && (dpc_d1_sad_w <= dpc_d2_sad_w))
-            dpc_target_w = dpc_d1_med_w;
-        else
-            dpc_target_w = dpc_d2_med_w;
+    // Use strict-less comparisons so ties naturally keep H > V > D1 > D2 priority.
+    dpc_best_sad_w = dpc_h_sad_s2;
+    dpc_target_w   = dpc_h_med_s2;
+    if (dpc_v_sad_s2 < dpc_best_sad_w) begin
+        dpc_best_sad_w = dpc_v_sad_s2;
+        dpc_target_w   = dpc_v_med_s2;
     end
-    else begin
-        if ((dpc_d1_sad_w < dpc_h_sad_w) && (dpc_d1_sad_w <= dpc_d2_sad_w))
-            dpc_target_w = dpc_d1_med_w;
-        else if ((dpc_d2_sad_w < dpc_h_sad_w) && (dpc_d2_sad_w < dpc_d1_sad_w))
-            dpc_target_w = dpc_d2_med_w;
+    if (dpc_d1_sad_s2 < dpc_best_sad_w) begin
+        dpc_best_sad_w = dpc_d1_sad_s2;
+        dpc_target_w   = dpc_d1_med_s2;
     end
+    if (dpc_d2_sad_s2 < dpc_best_sad_w)
+        dpc_target_w = dpc_d2_med_s2;
 
-    if (abs_diff_u12(dpc_p_w, dpc_target_w) > 13'd320)
+    if (abs_diff_u12(dpc_p_s2, dpc_target_w) > 13'd320)
         dpc_pixel_w = dpc_target_w;
     else
-        dpc_pixel_w = dpc_p_w;
+        dpc_pixel_w = dpc_p_s2;
 end
 
-always @(posedge clk) begin
-    if (curr_state == RUN_DPC)
-        dpc_buffer[dpc_cnt] <= dpc_pixel_w;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        dpc_vld_s1    <= 1'b0;
+        dpc_vld_s2    <= 1'b0;
+    end
+    else if ((curr_state == RUN_DPC) || dpc_vld_s1 || dpc_vld_s2) begin
+        if (dpc_vld_s2)
+            dpc_buffer[dpc_idx_s2] <= dpc_pixel_w;
+
+        dpc_vld_s2    <= dpc_vld_s1;
+        dpc_idx_s2    <= dpc_idx_s1;
+        dpc_p_s2      <= dpc_p_s1;
+        dpc_h_med_s2  <= dpc_h_med_s1;
+        dpc_v_med_s2  <= dpc_v_med_s1;
+        dpc_d1_med_s2 <= dpc_d1_med_s1;
+        dpc_d2_med_s2 <= dpc_d2_med_s1;
+        dpc_h_sad_s2  <= dpc_h_sad_w;
+        dpc_v_sad_s2  <= dpc_v_sad_w;
+        dpc_d1_sad_s2 <= dpc_d1_sad_w;
+        dpc_d2_sad_s2 <= dpc_d2_sad_w;
+
+        if (curr_state == RUN_DPC && !dpc_feed_done) begin
+            dpc_vld_s1    <= 1'b1;
+            dpc_idx_s1    <= dpc_cnt;
+            dpc_p_s1      <= dpc_p_w;
+            dpc_h0_s1     <= dpc_h0_w;
+            dpc_h1_s1     <= dpc_h1_w;
+            dpc_h2_s1     <= dpc_h2_w;
+            dpc_h3_s1     <= dpc_h3_w;
+            dpc_v0_s1     <= dpc_v0_w;
+            dpc_v1_s1     <= dpc_v1_w;
+            dpc_v2_s1     <= dpc_v2_w;
+            dpc_v3_s1     <= dpc_v3_w;
+            dpc_d10_s1    <= dpc_d10_w;
+            dpc_d11_s1    <= dpc_d11_w;
+            dpc_d12_s1    <= dpc_d12_w;
+            dpc_d13_s1    <= dpc_d13_w;
+            dpc_d20_s1    <= dpc_d20_w;
+            dpc_d21_s1    <= dpc_d21_w;
+            dpc_d22_s1    <= dpc_d22_w;
+            dpc_d23_s1    <= dpc_d23_w;
+            dpc_h_med_s1  <= dpc_h_med_w;
+            dpc_v_med_s1  <= dpc_v_med_w;
+            dpc_d1_med_s1 <= dpc_d1_med_w;
+            dpc_d2_med_s1 <= dpc_d2_med_w;
+        end
+        else begin
+            dpc_vld_s1 <= 1'b0;
+        end
+    end
+    else begin
+        dpc_vld_s1 <= 1'b0;
+        dpc_vld_s2 <= 1'b0;
+    end
 end
 
 // Demosaic: extract the 3x3 window from dpc_buffer and interpolate missing RGB components.
@@ -627,11 +687,17 @@ end
 
 // CCM: calculate one RGB output from one LSC pixel.
 always @(*) begin
-    ccm_r_raw_w = ccm_r_mul0_s2 + ccm_r_mul1_s2 + ccm_r_mul2_s2
+    ccm_r_raw_w = mul_u12_1100_s25(demo_r_s1)
+                + mul_u12_neg50_s25(demo_g_s1)
+                + mul_u12_neg50_s25(demo_b_s1)
                 + 26'sd512;
-    ccm_g_raw_w = ccm_g_mul0_s2 + ccm_g_mul1_s2 + ccm_g_mul2_s2
+    ccm_g_raw_w = mul_u12_neg50_s25(demo_r_s1)
+                + mul_u12_1100_s25(demo_g_s1)
+                + mul_u12_neg50_s25(demo_b_s1)
                 + 26'sd512;
-    ccm_b_raw_w = ccm_b_mul0_s2 + ccm_b_mul1_s2 + ccm_b_mul2_s2
+    ccm_b_raw_w = mul_u12_neg50_s25(demo_r_s1)
+                + mul_u12_neg50_s25(demo_g_s1)
+                + mul_u12_1100_s25(demo_b_s1)
                 + 26'sd512;
 
     ccm_r_w = clamp_u12(ccm_r_raw_w >>> 10);
@@ -639,33 +705,20 @@ always @(*) begin
     ccm_b_w = clamp_u12(ccm_b_raw_w >>> 10);
 end
 
-// DATA_OUT pipeline: register demosaic RGB, then register CCM products, then sum/clamp to outputs.
+// DATA_OUT pipeline: register demosaic RGB, then do CCM/clamp directly to outputs.
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         out_cnt       <= 8'd0;
         out_feed_done <= 1'b0;
         out_vld_s1    <= 1'b0;
-        out_vld_s2    <= 1'b0;
-        demo_r_s1     <= 12'd0;
-        demo_g_s1     <= 12'd0;
-        demo_b_s1     <= 12'd0;
-        ccm_r_mul0_s2 <= 25'sd0;
-        ccm_r_mul1_s2 <= 25'sd0;
-        ccm_r_mul2_s2 <= 25'sd0;
-        ccm_g_mul0_s2 <= 25'sd0;
-        ccm_g_mul1_s2 <= 25'sd0;
-        ccm_g_mul2_s2 <= 25'sd0;
-        ccm_b_mul0_s2 <= 25'sd0;
-        ccm_b_mul1_s2 <= 25'sd0;
-        ccm_b_mul2_s2 <= 25'sd0;
-        out_valid <= 1'b0;
-        r_out     <= 12'd0;
-        g_out     <= 12'd0;
-        b_out     <= 12'd0;
+        out_valid     <= 1'b0;
+        r_out         <= 12'd0;
+        g_out         <= 12'd0;
+        b_out         <= 12'd0;
     end
     else if (curr_state == DATA_OUT) begin
-        out_valid <= out_vld_s2;
-        if (out_vld_s2) begin
+        out_valid <= out_vld_s1;
+        if (out_vld_s1) begin
             r_out <= ccm_r_w;
             g_out <= ccm_g_w;
             b_out <= ccm_b_w;
@@ -675,17 +728,6 @@ always @(posedge clk or negedge rst_n) begin
             g_out <= 12'd0;
             b_out <= 12'd0;
         end
-
-        out_vld_s2    <= out_vld_s1;
-        ccm_r_mul0_s2 <= mul_u12_1100_s25(demo_r_s1);
-        ccm_r_mul1_s2 <= mul_u12_neg50_s25(demo_g_s1);
-        ccm_r_mul2_s2 <= mul_u12_neg50_s25(demo_b_s1);
-        ccm_g_mul0_s2 <= mul_u12_neg50_s25(demo_r_s1);
-        ccm_g_mul1_s2 <= mul_u12_1100_s25(demo_g_s1);
-        ccm_g_mul2_s2 <= mul_u12_neg50_s25(demo_b_s1);
-        ccm_b_mul0_s2 <= mul_u12_neg50_s25(demo_r_s1);
-        ccm_b_mul1_s2 <= mul_u12_neg50_s25(demo_g_s1);
-        ccm_b_mul2_s2 <= mul_u12_1100_s25(demo_b_s1);
 
         if (!out_feed_done) begin
             out_vld_s1 <= 1'b1;
@@ -706,11 +748,10 @@ always @(posedge clk or negedge rst_n) begin
         out_cnt       <= 8'd0;
         out_feed_done <= 1'b0;
         out_vld_s1    <= 1'b0;
-        out_vld_s2    <= 1'b0;
-        out_valid <= 1'b0;
-        r_out     <= 12'd0;
-        g_out     <= 12'd0;
-        b_out     <= 12'd0;
+        out_valid     <= 1'b0;
+        r_out         <= 12'd0;
+        g_out         <= 12'd0;
+        b_out         <= 12'd0;
     end
 end
 
