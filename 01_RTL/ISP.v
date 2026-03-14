@@ -40,16 +40,17 @@ localparam LSC_RUN    = 4'd3;
 localparam RUN_CCM    = 4'd4;
 localparam DATA_OUT   = 4'd5;
 localparam RUN_DPC    = 4'd6;
+localparam RUN_DEMOSAIC = 4'd7;
 
-localparam signed [11:0] CCM_RR = 12'sd1100;
-localparam signed [11:0] CCM_RG = 12'sd50;
-localparam signed [11:0] CCM_RB = 12'sd50;
-localparam signed [11:0] CCM_GR = -12'sd42;
-localparam signed [11:0] CCM_GG = 12'sd1092;
-localparam signed [11:0] CCM_GB = 12'sd26;
-localparam signed [11:0] CCM_BR = -12'sd25;
-localparam signed [11:0] CCM_BG = -12'sd25;
-localparam signed [11:0] CCM_BB = 12'sd1074;
+localparam signed [11:0] C11 = 12'sd1100;
+localparam signed [11:0] C12 = -12'sd50;
+localparam signed [11:0] C13 = -12'sd50;
+localparam signed [11:0] C21 = -12'sd50;
+localparam signed [11:0] C22 = 12'sd1100;
+localparam signed [11:0] C23 = -12'sd50;
+localparam signed [11:0] C31 = -12'sd50;
+localparam signed [11:0] C32 = -12'sd50;
+localparam signed [11:0] C33 = 12'sd1100;
 
 reg [3:0] curr_state, next_state;
 reg       in_valid_d1;
@@ -59,6 +60,7 @@ reg [7:0] blc_cnt;
 reg       blc_done_r;
 reg [7:0] lsc_cnt;
 reg [7:0] dpc_cnt;
+reg [7:0] demo_cnt;
 reg [7:0] ccm_cnt;
 reg [7:0] out_cnt;
 
@@ -66,6 +68,9 @@ reg [11:0] gain_mem     [0:143];
 reg [11:0] blc_buffer   [0:255];
 reg [11:0] lsc_buffer   [0:255];
 reg [11:0] dpc_buffer   [0:255];
+reg [11:0] demo_r_buffer [0:255];
+reg [11:0] demo_g_buffer [0:255];
+reg [11:0] demo_b_buffer [0:255];
 reg [11:0] ccm_r_buffer [0:255];
 reg [11:0] ccm_g_buffer [0:255];
 reg [11:0] ccm_b_buffer [0:255];
@@ -76,6 +81,8 @@ reg [3:0] x_now, y_now;
 reg [2:0] x0_w, y0_w;
 reg [1:0] rx_w, ry_w;
 reg [5:0] idx00_w, idx01_w, idx10_w, idx11_w;
+reg [7:0] gain_base_w;
+reg [7:0] gain_idx00_w, gain_idx01_w, gain_idx10_w, gain_idx11_w;
 reg [11:0] g00_w, g01_w, g10_w, g11_w;
 reg [8:0] dx_w, ix_w, dy_w, iy_w;
 reg [31:0] gain_accum_w;
@@ -87,13 +94,23 @@ reg [11:0] dpc_p_w;
 reg [11:0] dpc_h_med_w, dpc_v_med_w, dpc_d1_med_w, dpc_d2_med_w;
 reg [13:0] dpc_h_sad_w, dpc_v_sad_w, dpc_d1_sad_w, dpc_d2_sad_w;
 reg [11:0] dpc_target_w, dpc_pixel_w;
-reg signed [23:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
+reg [3:0] dx, dy;
+reg [7:0] idx_n, idx_s, idx_e, idx_w;
+reg [7:0] idx_nw, idx_ne, idx_sw, idx_se;
+reg [11:0] p_c;
+reg [11:0] p_n, p_s, p_e, p_w;
+reg [11:0] p_nw, p_ne, p_sw, p_se;
+reg [12:0] sum2_w;
+reg [13:0] sum4_w;
+reg [11:0] demo_r_w, demo_g_w, demo_b_w;
+reg signed [25:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
 reg [11:0] ccm_r_w, ccm_g_w, ccm_b_w;
 
 wire param_done_w;
 wire blc_done_w;
 wire lsc_done_w;
 wire dpc_done_w;
+wire demo_done_w;
 wire ccm_done_w;
 wire out_done_w;
 wire blc_fire_w;
@@ -103,14 +120,14 @@ wire [11:0] dpc_d10_w, dpc_d11_w, dpc_d12_w, dpc_d13_w;
 wire [11:0] dpc_d20_w, dpc_d21_w, dpc_d22_w, dpc_d23_w;
 
 function [11:0] clamp_u12;
-    input signed [23:0] val;
+    input signed [25:0] val_shifted;
     begin
-        if (val[23])
+        if (val_shifted[25])
             clamp_u12 = 12'd0;
-        else if (val[21:10] > 12'd4095)
+        else if (val_shifted > 26'sd4095)
             clamp_u12 = 12'd4095;
         else
-            clamp_u12 = val[21:10];
+            clamp_u12 = val_shifted[11:0];
     end
 endfunction
 
@@ -140,6 +157,35 @@ function [7:0] get_lsc_idx;
             final_y = temp_y;
 
         get_lsc_idx = {final_y[3:0], final_x[3:0]};
+    end
+endfunction
+
+function [7:0] get_demo_idx;
+    input [3:0] x_target;
+    input [3:0] y_target;
+    input signed [1:0] dx;
+    input signed [1:0] dy;
+    reg [3:0] fx, fy;
+    integer tx, ty;
+    begin
+        tx = $signed({1'b0, x_target}) + dx;
+        ty = $signed({1'b0, y_target}) + dy;
+
+        if (tx < 0)
+            fx = -tx;
+        else if (tx > 15)
+            fx = 30 - tx;
+        else
+            fx = tx[3:0];
+
+        if (ty < 0)
+            fy = -ty;
+        else if (ty > 15)
+            fy = 30 - ty;
+        else
+            fy = ty[3:0];
+
+        get_demo_idx = {fy, fx};
     end
 endfunction
 
@@ -183,6 +229,7 @@ assign blc_fire_w   = in_valid;
 assign blc_done_w   = blc_done_r;
 assign lsc_done_w   = (curr_state == LSC_RUN) && (lsc_cnt == 8'd255);
 assign dpc_done_w   = (curr_state == RUN_DPC)  && (dpc_cnt  == 8'd255);
+assign demo_done_w  = (curr_state == RUN_DEMOSAIC) && (demo_cnt == 8'd255);
 assign ccm_done_w   = (curr_state == RUN_CCM)  && (ccm_cnt  == 8'd255);
 assign out_done_w   = (curr_state == DATA_OUT) && (out_cnt  == 8'd255);
 
@@ -226,6 +273,10 @@ always @(*) begin
         end
         RUN_DPC: begin
             if (dpc_done_w)
+                next_state = RUN_DEMOSAIC;
+        end
+        RUN_DEMOSAIC: begin
+            if (demo_done_w)
                 next_state = RUN_CCM;
         end
         RUN_CCM: begin
@@ -348,6 +399,15 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
+        demo_cnt <= 8'd0;
+    else if (curr_state == RUN_DEMOSAIC)
+        demo_cnt <= demo_cnt + 8'd1;
+    else
+        demo_cnt <= 8'd0;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
         out_cnt <= 8'd0;
     else if (curr_state == DATA_OUT)
         out_cnt <= out_cnt + 8'd1;
@@ -420,37 +480,27 @@ always @(*) begin
         default: begin dy_w = 9'd0; iy_w = 9'd256; end
     endcase
 
-    idx00_w = y0_w * 6 + x0_w;
-    idx01_w = y0_w * 6 + x0_w + 1'b1;
-    idx10_w = (y0_w + 1'b1) * 6 + x0_w;
-    idx11_w = (y0_w + 1'b1) * 6 + x0_w + 1'b1;
+    idx00_w = (y0_w << 2) + (y0_w << 1) + x0_w;
+    idx01_w = (y0_w << 2) + (y0_w << 1) + x0_w + 3'd1;
+    idx10_w = ((y0_w + 3'd1) << 2) + ((y0_w + 3'd1) << 1) + x0_w;
+    idx11_w = ((y0_w + 3'd1) << 2) + ((y0_w + 3'd1) << 1) + x0_w + 3'd1;
 
     case ({y_now[0], x_now[0]})
-        2'b00: begin
-            g00_w = gain_mem[idx00_w];
-            g01_w = gain_mem[idx01_w];
-            g10_w = gain_mem[idx10_w];
-            g11_w = gain_mem[idx11_w];
-        end
-        2'b01: begin
-            g00_w = gain_mem[idx00_w + 6'd36];
-            g01_w = gain_mem[idx01_w + 6'd36];
-            g10_w = gain_mem[idx10_w + 6'd36];
-            g11_w = gain_mem[idx11_w + 6'd36];
-        end
-        2'b10: begin
-            g00_w = gain_mem[idx00_w + 7'd72];
-            g01_w = gain_mem[idx01_w + 7'd72];
-            g10_w = gain_mem[idx10_w + 7'd72];
-            g11_w = gain_mem[idx11_w + 7'd72];
-        end
-        default: begin
-            g00_w = gain_mem[idx00_w + 7'd108];
-            g01_w = gain_mem[idx01_w + 7'd108];
-            g10_w = gain_mem[idx10_w + 7'd108];
-            g11_w = gain_mem[idx11_w + 7'd108];
-        end
+        2'b00: gain_base_w = 8'd0;
+        2'b01: gain_base_w = 8'd36;
+        2'b10: gain_base_w = 8'd72;
+        default: gain_base_w = 8'd108;
     endcase
+
+    gain_idx00_w = gain_base_w + idx00_w;
+    gain_idx01_w = gain_base_w + idx01_w;
+    gain_idx10_w = gain_base_w + idx10_w;
+    gain_idx11_w = gain_base_w + idx11_w;
+
+    g00_w = gain_mem[gain_idx00_w];
+    g01_w = gain_mem[gain_idx01_w];
+    g10_w = gain_mem[gain_idx10_w];
+    g11_w = gain_mem[gain_idx11_w];
 end
 
 // LSC: calculate G(x,y), then apply it to P(x,y).
@@ -522,24 +572,79 @@ always @(posedge clk) begin
         dpc_buffer[dpc_cnt] <= dpc_pixel_w;
 end
 
+// Demosaic: extract the 3x3 window from dpc_buffer and interpolate missing RGB components.
+always @(*) begin
+    dx = demo_cnt[3:0];
+    dy = demo_cnt[7:4];
+
+    p_c  = dpc_buffer[demo_cnt];
+    p_n  = dpc_buffer[get_demo_idx(dx, dy,  2'sd0, -2'sd1)];
+    p_s  = dpc_buffer[get_demo_idx(dx, dy,  2'sd0,  2'sd1)];
+    p_e  = dpc_buffer[get_demo_idx(dx, dy,  2'sd1,  2'sd0)];
+    p_w  = dpc_buffer[get_demo_idx(dx, dy, -2'sd1,  2'sd0)];
+    p_nw = dpc_buffer[get_demo_idx(dx, dy, -2'sd1, -2'sd1)];
+    p_ne = dpc_buffer[get_demo_idx(dx, dy,  2'sd1, -2'sd1)];
+    p_sw = dpc_buffer[get_demo_idx(dx, dy, -2'sd1,  2'sd1)];
+    p_se = dpc_buffer[get_demo_idx(dx, dy,  2'sd1,  2'sd1)];
+
+    case ({dy[0], dx[0]})
+        2'b00: begin
+            demo_r_w = p_c;
+            sum4_w   = p_n + p_s + p_e + p_w;
+            demo_g_w = sum4_w >> 2;
+            sum4_w   = p_nw + p_ne + p_sw + p_se;
+            demo_b_w = sum4_w >> 2;
+        end
+        2'b01: begin
+            sum2_w   = p_w + p_e;
+            demo_r_w = sum2_w >> 1;
+            demo_g_w = p_c;
+            sum2_w   = p_n + p_s;
+            demo_b_w = sum2_w >> 1;
+        end
+        2'b10: begin
+            sum2_w   = p_n + p_s;
+            demo_r_w = sum2_w >> 1;
+            demo_g_w = p_c;
+            sum2_w   = p_w + p_e;
+            demo_b_w = sum2_w >> 1;
+        end
+        default: begin
+            sum4_w   = p_nw + p_ne + p_sw + p_se;
+            demo_r_w = sum4_w >> 2;
+            sum4_w   = p_n + p_s + p_e + p_w;
+            demo_g_w = sum4_w >> 2;
+            demo_b_w = p_c;
+        end
+    endcase
+end
+
+always @(posedge clk) begin
+    if (curr_state == RUN_DEMOSAIC) begin
+        demo_r_buffer[demo_cnt] <= demo_r_w;
+        demo_g_buffer[demo_cnt] <= demo_g_w;
+        demo_b_buffer[demo_cnt] <= demo_b_w;
+    end
+end
+
 // CCM: calculate one RGB output from one LSC pixel.
 always @(*) begin
-    ccm_r_raw_w = ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_RR)
-                - ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_RG)
-                - ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_RB)
-                + 24'sd512;
-    ccm_g_raw_w = ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_GR)
-                + ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_GG)
-                - ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_GB)
-                + 24'sd512;
-    ccm_b_raw_w = ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_BR)
-                + ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_BG)
-                + ($signed({1'b0, dpc_buffer[ccm_cnt]}) * CCM_BB)
-                + 24'sd512;
+    ccm_r_raw_w = ($signed({1'b0, demo_r_buffer[ccm_cnt]}) * C11)
+                + ($signed({1'b0, demo_g_buffer[ccm_cnt]}) * C12)
+                + ($signed({1'b0, demo_b_buffer[ccm_cnt]}) * C13)
+                + 26'sd512;
+    ccm_g_raw_w = ($signed({1'b0, demo_r_buffer[ccm_cnt]}) * C21)
+                + ($signed({1'b0, demo_g_buffer[ccm_cnt]}) * C22)
+                + ($signed({1'b0, demo_b_buffer[ccm_cnt]}) * C23)
+                + 26'sd512;
+    ccm_b_raw_w = ($signed({1'b0, demo_r_buffer[ccm_cnt]}) * C31)
+                + ($signed({1'b0, demo_g_buffer[ccm_cnt]}) * C32)
+                + ($signed({1'b0, demo_b_buffer[ccm_cnt]}) * C33)
+                + 26'sd512;
 
-    ccm_r_w = clamp_u12(ccm_r_raw_w);
-    ccm_g_w = clamp_u12(ccm_g_raw_w);
-    ccm_b_w = clamp_u12(ccm_b_raw_w);
+    ccm_r_w = clamp_u12(ccm_r_raw_w >>> 10);
+    ccm_g_w = clamp_u12(ccm_g_raw_w >>> 10);
+    ccm_b_w = clamp_u12(ccm_b_raw_w >>> 10);
 end
 
 always @(posedge clk) begin
