@@ -69,7 +69,8 @@ BSSLib.lib++
 *.lib++
 # reports that regenerate
 Report/*.rpt
-
+# synthesis netlist
+02_SYN/Netlist/
 # ==================================================
 # Gate simulation
 # ==================================================

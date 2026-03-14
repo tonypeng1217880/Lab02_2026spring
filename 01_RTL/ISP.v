@@ -36,11 +36,8 @@ output reg [11:0] b_out;
 localparam IDLE       = 4'd0;
 localparam LOAD_PARAM = 4'd1;
 localparam RUN_BLC    = 4'd2;
-localparam LSC_RUN    = 4'd3;
-localparam RUN_CCM    = 4'd4;
 localparam DATA_OUT   = 4'd5;
 localparam RUN_DPC    = 4'd6;
-localparam RUN_DEMOSAIC = 4'd7;
 
 localparam signed [11:0] C11 = 12'sd1100;
 localparam signed [11:0] C12 = -12'sd50;
@@ -53,23 +50,19 @@ localparam signed [11:0] C32 = -12'sd50;
 localparam signed [11:0] C33 = 12'sd1100;
 
 reg [3:0] curr_state, next_state;
-reg       in_valid_d1;
 reg       param_valid_d1;
 reg [7:0] param_cnt;
 reg [7:0] blc_cnt;
-reg       blc_done_r;
 reg       blc_started;
-reg [7:0] lsc_cnt;
 reg [7:0] dpc_cnt;
-reg [7:0] demo_cnt;
 reg [7:0] out_cnt;
 
-reg [11:0] gain_mem     [0:143];
+reg [11:0] gain_r_map   [0:35];
+reg [11:0] gain_gr_map  [0:35];
+reg [11:0] gain_gb_map  [0:35];
+reg [11:0] gain_b_map   [0:35];
 reg [11:0] main_buffer  [0:255];
 reg [11:0] dpc_buffer   [0:255];
-reg [11:0] demo_r_buffer [0:255];
-reg [11:0] demo_g_buffer [0:255];
-reg [11:0] demo_b_buffer [0:255];
 reg [3:0] row_cnt, col_cnt;
 reg [6:0] b_offset;
 reg [11:0] blc_p_s1;
@@ -85,8 +78,6 @@ reg [3:0] x_now, y_now;
 reg [2:0] x0_w, y0_w;
 reg [1:0] rx_w, ry_w;
 reg [5:0] idx00_w, idx01_w, idx10_w, idx11_w;
-reg [7:0] gain_base_w;
-reg [7:0] gain_idx00_w, gain_idx01_w, gain_idx10_w, gain_idx11_w;
 reg [11:0] g00_w, g01_w, g10_w, g11_w;
 reg [8:0] dx_w, ix_w, dy_w, iy_w;
 reg [31:0] gain_accum_w;
@@ -110,12 +101,16 @@ reg [11:0] demo_r_w, demo_g_w, demo_b_w;
 reg signed [25:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
 reg [11:0] ccm_r_w, ccm_g_w, ccm_b_w;
 reg [11:0] blc_pixel_w;
+reg [11:0] demo_r_s1, demo_g_s1, demo_b_s1;
+reg        out_vld_s1, out_vld_s2;
+reg        out_feed_done;
+reg signed [24:0] ccm_r_mul0_s2, ccm_r_mul1_s2, ccm_r_mul2_s2;
+reg signed [24:0] ccm_g_mul0_s2, ccm_g_mul1_s2, ccm_g_mul2_s2;
+reg signed [24:0] ccm_b_mul0_s2, ccm_b_mul1_s2, ccm_b_mul2_s2;
 
 wire param_done_w;
 wire blc_done_w;
-wire lsc_done_w;
 wire dpc_done_w;
-wire demo_done_w;
 wire out_done_w;
 wire blc_fire_w;
 wire [11:0] dpc_h0_w, dpc_h1_w, dpc_h2_w, dpc_h3_w;
@@ -132,6 +127,24 @@ function [11:0] clamp_u12;
             clamp_u12 = 12'd4095;
         else
             clamp_u12 = val_shifted[11:0];
+    end
+endfunction
+
+function signed [24:0] mul_u12_1100_s25;
+    input [11:0] x;
+    reg [24:0] x_ext;
+    begin
+        x_ext = {13'd0, x};
+        mul_u12_1100_s25 = (x_ext << 10) + (x_ext << 6) + (x_ext << 3) + (x_ext << 2);
+    end
+endfunction
+
+function signed [24:0] mul_u12_neg50_s25;
+    input [11:0] x;
+    reg signed [24:0] x_ext;
+    begin
+        x_ext = {13'd0, x};
+        mul_u12_neg50_s25 = -((x_ext << 5) + (x_ext << 4) + (x_ext << 1));
     end
 endfunction
 
@@ -231,10 +244,8 @@ endfunction
 assign param_done_w = param_valid_d1 && !param_valid;
 assign blc_fire_w   = in_valid;
 assign blc_done_w   = (curr_state == RUN_BLC) && blc_started && !in_valid && !vld_s1 && !vld_s2;
-assign lsc_done_w   = (curr_state == LSC_RUN) && (lsc_cnt == 8'd255);
 assign dpc_done_w   = (curr_state == RUN_DPC)  && (dpc_cnt  == 8'd255);
-assign demo_done_w  = (curr_state == RUN_DEMOSAIC) && (demo_cnt == 8'd255);
-assign out_done_w   = (curr_state == DATA_OUT) && (out_cnt  == 8'd255);
+assign out_done_w   = (curr_state == DATA_OUT) && out_feed_done && !out_vld_s1 && !out_vld_s2;
 
 assign dpc_h0_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd0)];
 assign dpc_h1_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd0)];
@@ -270,15 +281,8 @@ always @(*) begin
             if (blc_done_w)
                 next_state = RUN_DPC;
         end
-        LSC_RUN: begin
-            next_state = RUN_DPC;
-        end
         RUN_DPC: begin
             if (dpc_done_w)
-                next_state = RUN_DEMOSAIC;
-        end
-        RUN_DEMOSAIC: begin
-            if (demo_done_w)
                 next_state = DATA_OUT;
         end
         DATA_OUT: begin
@@ -298,13 +302,6 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
-        in_valid_d1 <= 1'b0;
-    else
-        in_valid_d1 <= in_valid;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
         param_valid_d1 <= 1'b0;
     else
         param_valid_d1 <= param_valid;
@@ -314,7 +311,14 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
         param_cnt <= 8'd0;
     else if (param_valid) begin
-        gain_mem[param_cnt] <= param_gain;
+        if (param_cnt < 8'd36)
+            gain_r_map[param_cnt[5:0]] <= param_gain;
+        else if (param_cnt < 8'd72)
+            gain_gr_map[param_cnt - 8'd36] <= param_gain;
+        else if (param_cnt < 8'd108)
+            gain_gb_map[param_cnt - 8'd72] <= param_gain;
+        else
+            gain_b_map[param_cnt - 8'd108] <= param_gain;
         param_cnt <= param_cnt + 8'd1;
     end
     else if (curr_state == IDLE)
@@ -337,15 +341,6 @@ always @(posedge clk or negedge rst_n) begin
         blc_started <= 1'b0;
     else if (curr_state == RUN_BLC && in_valid)
         blc_started <= 1'b1;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        blc_done_r <= 1'b0;
-    else if (curr_state != RUN_BLC)
-        blc_done_r <= 1'b0;
-    else if (in_valid_d1 && !in_valid)
-        blc_done_r <= 1'b1;
 end
 
 always @(posedge clk or negedge rst_n) begin
@@ -379,38 +374,11 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
-        lsc_cnt <= 8'd0;
-    else if (curr_state == LSC_RUN)
-        lsc_cnt <= lsc_cnt + 8'd1;
-    else
-        lsc_cnt <= 8'd0;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
         dpc_cnt <= 8'd0;
     else if (curr_state == RUN_DPC)
         dpc_cnt <= dpc_cnt + 8'd1;
     else
         dpc_cnt <= 8'd0;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        demo_cnt <= 8'd0;
-    else if (curr_state == RUN_DEMOSAIC)
-        demo_cnt <= demo_cnt + 8'd1;
-    else
-        demo_cnt <= 8'd0;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        out_cnt <= 8'd0;
-    else if (curr_state == DATA_OUT)
-        out_cnt <= out_cnt + 8'd1;
-    else
-        out_cnt <= 8'd0;
 end
 
 always @(*) begin
@@ -519,21 +487,31 @@ always @(*) begin
     idx11_w = ((y0_w + 3'd1) << 2) + ((y0_w + 3'd1) << 1) + x0_w + 3'd1;
 
     case ({y_now[0], x_now[0]})
-        2'b00: gain_base_w = 8'd0;
-        2'b01: gain_base_w = 8'd36;
-        2'b10: gain_base_w = 8'd72;
-        default: gain_base_w = 8'd108;
+        2'b00: begin
+            g00_w = gain_r_map[idx00_w];
+            g01_w = gain_r_map[idx01_w];
+            g10_w = gain_r_map[idx10_w];
+            g11_w = gain_r_map[idx11_w];
+        end
+        2'b01: begin
+            g00_w = gain_gr_map[idx00_w];
+            g01_w = gain_gr_map[idx01_w];
+            g10_w = gain_gr_map[idx10_w];
+            g11_w = gain_gr_map[idx11_w];
+        end
+        2'b10: begin
+            g00_w = gain_gb_map[idx00_w];
+            g01_w = gain_gb_map[idx01_w];
+            g10_w = gain_gb_map[idx10_w];
+            g11_w = gain_gb_map[idx11_w];
+        end
+        default: begin
+            g00_w = gain_b_map[idx00_w];
+            g01_w = gain_b_map[idx01_w];
+            g10_w = gain_b_map[idx10_w];
+            g11_w = gain_b_map[idx11_w];
+        end
     endcase
-
-    gain_idx00_w = gain_base_w + idx00_w;
-    gain_idx01_w = gain_base_w + idx01_w;
-    gain_idx10_w = gain_base_w + idx10_w;
-    gain_idx11_w = gain_base_w + idx11_w;
-
-    g00_w = gain_mem[gain_idx00_w];
-    g01_w = gain_mem[gain_idx01_w];
-    g10_w = gain_mem[gain_idx10_w];
-    g11_w = gain_mem[gain_idx11_w];
 end
 
 // LSC: calculate G(x,y), then apply it to P(x,y).
@@ -602,10 +580,10 @@ end
 
 // Demosaic: extract the 3x3 window from dpc_buffer and interpolate missing RGB components.
 always @(*) begin
-    dx = demo_cnt[3:0];
-    dy = demo_cnt[7:4];
+    dx = out_cnt[3:0];
+    dy = out_cnt[7:4];
 
-    p_c  = dpc_buffer[demo_cnt];
+    p_c  = dpc_buffer[out_cnt];
     p_n  = dpc_buffer[get_demo_idx(dx, dy,  2'sd0, -2'sd1)];
     p_s  = dpc_buffer[get_demo_idx(dx, dy,  2'sd0,  2'sd1)];
     p_e  = dpc_buffer[get_demo_idx(dx, dy,  2'sd1,  2'sd0)];
@@ -647,27 +625,13 @@ always @(*) begin
     endcase
 end
 
-always @(posedge clk) begin
-    if (curr_state == RUN_DEMOSAIC) begin
-        demo_r_buffer[demo_cnt] <= demo_r_w;
-        demo_g_buffer[demo_cnt] <= demo_g_w;
-        demo_b_buffer[demo_cnt] <= demo_b_w;
-    end
-end
-
 // CCM: calculate one RGB output from one LSC pixel.
 always @(*) begin
-    ccm_r_raw_w = ($signed({1'b0, demo_r_buffer[out_cnt]}) * C11)
-                + ($signed({1'b0, demo_g_buffer[out_cnt]}) * C12)
-                + ($signed({1'b0, demo_b_buffer[out_cnt]}) * C13)
+    ccm_r_raw_w = ccm_r_mul0_s2 + ccm_r_mul1_s2 + ccm_r_mul2_s2
                 + 26'sd512;
-    ccm_g_raw_w = ($signed({1'b0, demo_r_buffer[out_cnt]}) * C21)
-                + ($signed({1'b0, demo_g_buffer[out_cnt]}) * C22)
-                + ($signed({1'b0, demo_b_buffer[out_cnt]}) * C23)
+    ccm_g_raw_w = ccm_g_mul0_s2 + ccm_g_mul1_s2 + ccm_g_mul2_s2
                 + 26'sd512;
-    ccm_b_raw_w = ($signed({1'b0, demo_r_buffer[out_cnt]}) * C31)
-                + ($signed({1'b0, demo_g_buffer[out_cnt]}) * C32)
-                + ($signed({1'b0, demo_b_buffer[out_cnt]}) * C33)
+    ccm_b_raw_w = ccm_b_mul0_s2 + ccm_b_mul1_s2 + ccm_b_mul2_s2
                 + 26'sd512;
 
     ccm_r_w = clamp_u12(ccm_r_raw_w >>> 10);
@@ -675,21 +639,74 @@ always @(*) begin
     ccm_b_w = clamp_u12(ccm_b_raw_w >>> 10);
 end
 
-// Output 256 RGB pixels after all stages finish.
+// DATA_OUT pipeline: register demosaic RGB, then register CCM products, then sum/clamp to outputs.
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
+        out_cnt       <= 8'd0;
+        out_feed_done <= 1'b0;
+        out_vld_s1    <= 1'b0;
+        out_vld_s2    <= 1'b0;
+        demo_r_s1     <= 12'd0;
+        demo_g_s1     <= 12'd0;
+        demo_b_s1     <= 12'd0;
+        ccm_r_mul0_s2 <= 25'sd0;
+        ccm_r_mul1_s2 <= 25'sd0;
+        ccm_r_mul2_s2 <= 25'sd0;
+        ccm_g_mul0_s2 <= 25'sd0;
+        ccm_g_mul1_s2 <= 25'sd0;
+        ccm_g_mul2_s2 <= 25'sd0;
+        ccm_b_mul0_s2 <= 25'sd0;
+        ccm_b_mul1_s2 <= 25'sd0;
+        ccm_b_mul2_s2 <= 25'sd0;
         out_valid <= 1'b0;
         r_out     <= 12'd0;
         g_out     <= 12'd0;
         b_out     <= 12'd0;
     end
     else if (curr_state == DATA_OUT) begin
-        out_valid <= 1'b1;
-        r_out     <= ccm_r_w;
-        g_out     <= ccm_g_w;
-        b_out     <= ccm_b_w;
+        out_valid <= out_vld_s2;
+        if (out_vld_s2) begin
+            r_out <= ccm_r_w;
+            g_out <= ccm_g_w;
+            b_out <= ccm_b_w;
+        end
+        else begin
+            r_out <= 12'd0;
+            g_out <= 12'd0;
+            b_out <= 12'd0;
+        end
+
+        out_vld_s2    <= out_vld_s1;
+        ccm_r_mul0_s2 <= mul_u12_1100_s25(demo_r_s1);
+        ccm_r_mul1_s2 <= mul_u12_neg50_s25(demo_g_s1);
+        ccm_r_mul2_s2 <= mul_u12_neg50_s25(demo_b_s1);
+        ccm_g_mul0_s2 <= mul_u12_neg50_s25(demo_r_s1);
+        ccm_g_mul1_s2 <= mul_u12_1100_s25(demo_g_s1);
+        ccm_g_mul2_s2 <= mul_u12_neg50_s25(demo_b_s1);
+        ccm_b_mul0_s2 <= mul_u12_neg50_s25(demo_r_s1);
+        ccm_b_mul1_s2 <= mul_u12_neg50_s25(demo_g_s1);
+        ccm_b_mul2_s2 <= mul_u12_1100_s25(demo_b_s1);
+
+        if (!out_feed_done) begin
+            out_vld_s1 <= 1'b1;
+            demo_r_s1  <= demo_r_w;
+            demo_g_s1  <= demo_g_w;
+            demo_b_s1  <= demo_b_w;
+
+            if (out_cnt == 8'd255)
+                out_feed_done <= 1'b1;
+            else
+                out_cnt <= out_cnt + 8'd1;
+        end
+        else begin
+            out_vld_s1 <= 1'b0;
+        end
     end
     else begin
+        out_cnt       <= 8'd0;
+        out_feed_done <= 1'b0;
+        out_vld_s1    <= 1'b0;
+        out_vld_s2    <= 1'b0;
         out_valid <= 1'b0;
         r_out     <= 12'd0;
         g_out     <= 12'd0;
