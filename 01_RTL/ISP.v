@@ -342,10 +342,8 @@ always @(posedge clk or negedge rst_n) begin
         blc_cnt <= 8'd0;
 end
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        blc_started <= 1'b0;
-    else if (curr_state == IDLE)
+always @(posedge clk) begin
+    if (curr_state == IDLE)
         blc_started <= 1'b0;
     else if (curr_state == RUN_BLC && in_valid)
         blc_started <= 1'b1;
@@ -407,12 +405,8 @@ always @(*) begin
         blc_pixel_w = 12'd0;
 end
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        vld_s1   <= 1'b0;
-        vld_s2   <= 1'b0;
-    end
-    else if ((curr_state == RUN_BLC) || in_valid || vld_s1 || vld_s2) begin
+always @(posedge clk) begin
+    if ((curr_state == RUN_BLC) || in_valid || vld_s1 || vld_s2) begin
         if (vld_s2)
             main_buffer[idx_s2] <= lsc_pixel_w;
 
@@ -562,7 +556,6 @@ always @(*) begin
     dpc_d2_sad_w = abs_diff_u12(dpc_d20_s1, dpc_d2_med_s1) + abs_diff_u12(dpc_d21_s1, dpc_d2_med_s1) +
                    abs_diff_u12(dpc_d22_s1, dpc_d2_med_s1) + abs_diff_u12(dpc_d23_s1, dpc_d2_med_s1);
 
-    // Use strict-less comparisons so ties naturally keep H > V > D1 > D2 priority.
     dpc_best_sad_w = dpc_h_sad_s2;
     dpc_target_w   = dpc_h_med_s2;
     if (dpc_v_sad_s2 < dpc_best_sad_w) begin

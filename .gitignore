@@ -14,7 +14,7 @@ ucli.key
 *.vpd.gz
 *.log
 *.key
-
+00_TESTBED/*.txt
 novas_dump.log
 
 # Verdi / nWave logs
@@ -40,7 +40,10 @@ DVEfiles/
 *.so
 *.o
 *.a
-
+# tar files
+*.tar.gz
+*.tar
+/09_SUBMIT/
 # ==================================================
 # Synthesis (Design Compiler)
 # ==================================================

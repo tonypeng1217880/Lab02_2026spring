@@ -18,11 +18,11 @@
 //############################################################################
 
 `ifdef RTL
-    `define CYCLE_TIME 10.0
+    `define CYCLE_TIME 9.0
 `endif
 
 `ifdef GATE
-    `define CYCLE_TIME 10.0
+    `define CYCLE_TIME 9.0
 `endif
 
 module PATTERN(
@@ -60,7 +60,7 @@ input [11:0] b_out;
 real CYCLE = `CYCLE_TIME;
 
 // ========== Parameter ==========
-parameter PATNUM = 10;     
+parameter PATNUM = 1000;     
 parameter IMG_HEIGHT = 16;  
 parameter IMG_WIDTH = 16;  
 parameter TOTAL_PIXELS = IMG_HEIGHT * IMG_WIDTH;  
