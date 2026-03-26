@@ -1,751 +1,815 @@
-module ISP(
-    //Input Port
-    clk,
-    rst_n,
+module ISP (
+    input clk,
+    input rst_n,
+    input in_valid,
+    input [11:0] in,
+    input param_valid,
+    input [11:0] param_gain,
+    output reg out_valid,
+    output reg [11:0] r_out,
+    output reg [11:0] g_out,
+    output reg [11:0] b_out
+);
 
-    in_valid,
-    in,
-    param_valid,
-    param_gain,
+// ==========================================================================
+// FSM Parameters
+// ==========================================================================
+localparam IDLE     = 2'd0;
+localparam DATA_IN  = 2'd1; 
+localparam DPC_ST   = 2'd2; 
+localparam DATA_OUT = 2'd3; 
 
-    //Output Port
-    out_valid,
-    r_out,
-    g_out,
-    b_out
-    );
 
-//==============================
-//   INPUT/OUTPUT DECLARATION
-//==============================
-input clk;
-input rst_n;
-input in_valid;
-input [11:0] in;
-input param_valid;
-input [11:0] param_gain;
+// ==========================================================================
+// Signals
+// ==========================================================================
+// FSM state
+reg [1:0] state, next_state;
 
-output reg out_valid;
-output reg [11:0] r_out;
-output reg [11:0] g_out;
-output reg [11:0] b_out;
+// buffer
+reg [11:0] param_buffer_R  [0:5][0:5];
+reg [11:0] param_buffer_Gr [0:5][0:5];
+reg [11:0] param_buffer_Gb [0:5][0:5];
+reg [11:0] param_buffer_B  [0:5][0:5];
 
-//==============================
-//   Design
-//==============================
-localparam IDLE       = 4'd0;
-localparam LOAD_PARAM = 4'd1;
-localparam RUN_BLC    = 4'd2;
-localparam DATA_OUT   = 4'd5;
-localparam RUN_DPC    = 4'd6;
+reg [11:0] lsc_buf [0:15][0:15];
+reg [11:0] dpc_buf [0:15][0:15];
 
-localparam signed [11:0] C11 = 12'sd1100;
-localparam signed [11:0] C12 = -12'sd50;
-localparam signed [11:0] C13 = -12'sd50;
-localparam signed [11:0] C21 = -12'sd50;
-localparam signed [11:0] C22 = 12'sd1100;
-localparam signed [11:0] C23 = -12'sd50;
-localparam signed [11:0] C31 = -12'sd50;
-localparam signed [11:0] C32 = -12'sd50;
-localparam signed [11:0] C33 = 12'sd1100;
+// param addr
+reg [2:0] p_x, p_y;
+reg [1:0] p_ch;
 
-reg [3:0] curr_state, next_state;
-reg       param_valid_d1;
-reg [7:0] param_cnt;
-reg [7:0] blc_cnt;
-reg       blc_started;
-reg [7:0] dpc_cnt;
-reg [7:0] out_cnt;
+// input counter
+reg [7:0] in_count;
 
-reg [11:0] gain_r_map   [0:35];
-reg [11:0] gain_gr_map  [0:35];
-reg [11:0] gain_gb_map  [0:35];
-reg [11:0] gain_b_map   [0:35];
-reg [11:0] main_buffer  [0:255];
-reg [11:0] dpc_buffer   [0:255];
-reg [3:0] row_cnt, col_cnt;
-reg [6:0] b_offset;
-reg [11:0] blc_p_s1;
-reg [7:0]  idx_s1;
-reg [3:0]  x_s1, y_s1;
-reg        vld_s1;
-reg [11:0] blc_p_s2;
-reg [11:0] gain_s2;
-reg [7:0]  idx_s2;
-reg        vld_s2;
+// input reg
+reg [11:0] in_reg; 
+reg in_valid_reg; 
+reg [7:0] in_count_reg;
 
-reg [3:0] x_now, y_now;
-reg [2:0] x0_w, y0_w;
-reg [1:0] rx_w, ry_w;
-reg [5:0] idx00_w, idx01_w, idx10_w, idx11_w;
-reg [11:0] g00_w, g01_w, g10_w, g11_w;
-reg [8:0] dx_w, ix_w, dy_w, iy_w;
-reg [21:0] gain_top_w, gain_bot_w;
-reg [31:0] gain_accum_w;
-reg [11:0] gain_w;
-reg [31:0] lsc_accum_w;
-reg [11:0] lsc_pixel_w;
-reg [3:0] dpc_x_now, dpc_y_now;
-reg [11:0] dpc_p_w;
-reg [11:0] dpc_h_med_w, dpc_v_med_w, dpc_d1_med_w, dpc_d2_med_w;
-reg [13:0] dpc_h_sad_w, dpc_v_sad_w, dpc_d1_sad_w, dpc_d2_sad_w;
-reg [11:0] dpc_target_w, dpc_pixel_w;
-reg [13:0] dpc_best_sad_w;
-reg        dpc_vld_s1, dpc_vld_s2;
-reg        dpc_feed_done;
-reg [7:0]  dpc_idx_s1, dpc_idx_s2;
-reg [11:0] dpc_p_s1, dpc_p_s2;
-reg [11:0] dpc_h0_s1, dpc_h1_s1, dpc_h2_s1, dpc_h3_s1;
-reg [11:0] dpc_v0_s1, dpc_v1_s1, dpc_v2_s1, dpc_v3_s1;
-reg [11:0] dpc_d10_s1, dpc_d11_s1, dpc_d12_s1, dpc_d13_s1;
-reg [11:0] dpc_d20_s1, dpc_d21_s1, dpc_d22_s1, dpc_d23_s1;
-reg [11:0] dpc_h_med_s1, dpc_v_med_s1, dpc_d1_med_s1, dpc_d2_med_s1;
-reg [11:0] dpc_h_med_s2, dpc_v_med_s2, dpc_d1_med_s2, dpc_d2_med_s2;
-reg [13:0] dpc_h_sad_s2, dpc_v_sad_s2, dpc_d1_sad_s2, dpc_d2_sad_s2;
-reg [3:0] dx, dy;
-reg [11:0] p_c;
-reg [11:0] p_n, p_s, p_e, p_w;
-reg [11:0] p_nw, p_ne, p_sw, p_se;
-reg [12:0] sum2_w;
-reg [13:0] sum4_w;
-reg [11:0] demo_r_w, demo_g_w, demo_b_w;
-reg signed [25:0] ccm_r_raw_w, ccm_g_raw_w, ccm_b_raw_w;
-reg [11:0] ccm_r_w, ccm_g_w, ccm_b_w;
-reg [11:0] blc_pixel_w;
-reg [11:0] demo_r_s1, demo_g_s1, demo_b_s1;
-reg        out_vld_s1;
-reg        out_feed_done;
+// BLC
+reg [11:0] blc_reg; 
+reg blc_valid_reg; 
+reg [7:0] blc_count;
 
-wire param_done_w;
-wire blc_done_w;
-wire dpc_done_w;
-wire out_done_w;
-wire blc_fire_w;
-wire [11:0] dpc_h0_w, dpc_h1_w, dpc_h2_w, dpc_h3_w;
-wire [11:0] dpc_v0_w, dpc_v1_w, dpc_v2_w, dpc_v3_w;
-wire [11:0] dpc_d10_w, dpc_d11_w, dpc_d12_w, dpc_d13_w;
-wire [11:0] dpc_d20_w, dpc_d21_w, dpc_d22_w, dpc_d23_w;
+// LSC
+reg [11:0] lsc_g00, lsc_g01, lsc_g10, lsc_g11;
+reg [8:0] lsc_ix, lsc_dx, lsc_iy, lsc_dy;
+reg [8:0] lsc2_iy, lsc2_dy;
+reg [16:0] lsc3_Gxy; 
 
-function [11:0] clamp_u12;
-    input signed [25:0] val_shifted;
-    begin
-        if (val_shifted[25])
-            clamp_u12 = 12'd0;
-        else if (val_shifted > 26'sd4095)
-            clamp_u12 = 12'd4095;
-        else
-            clamp_u12 = val_shifted[11:0];
-    end
-endfunction
+reg [11:0] lsc_reg; 
+reg [21:0] lsc2_G_top, lsc2_G_bot;
+reg [11:0] lsc3_reg; 
+reg [28:0] lsc4_reg; 
+reg [11:0] lsc5_reg; 
 
-function signed [24:0] mul_u12_1100_s25;
-    input [11:0] x;
-    reg [24:0] x_ext;
-    begin
-        x_ext = {13'd0, x};
-        mul_u12_1100_s25 = (x_ext << 10) + (x_ext << 6) + (x_ext << 3) + (x_ext << 2);
-    end
-endfunction
+reg lsc_valid_reg; 
+reg lsc3_valid;
+reg lsc4_valid;  
+reg lsc5_valid; 
 
-function signed [24:0] mul_u12_neg50_s25;
-    input [11:0] x;
-    reg signed [24:0] x_ext;
-    begin
-        x_ext = {13'd0, x};
-        mul_u12_neg50_s25 = -((x_ext << 5) + (x_ext << 4) + (x_ext << 1));
-    end
-endfunction
+reg [7:0] lsc_count;
+reg [7:0] lsc3_count;
+reg [7:0] lsc4_count;
+reg [7:0] lsc5_count;
 
-function [7:0] get_lsc_idx;
-    input [3:0] x_target;
-    input [3:0] y_target;
-    input signed [2:0] dx;
-    input signed [2:0] dy;
-    reg [3:0] final_x, final_y;
-    integer temp_x, temp_y;
-    begin
-        temp_x = $signed({1'b0, x_target}) + dx;
-        temp_y = $signed({1'b0, y_target}) + dy;
+// DPC
+reg dpc_gen_done; 
+reg [7:0] dpc_gen_count;
 
-        if (temp_x < 0)
-            final_x = -temp_x;
-        else if (temp_x > 15)
-            final_x = 30 - temp_x;
-        else
-            final_x = temp_x;
+reg dpc1_valid; 
+reg dpc2_valid; 
+reg dpc3_valid; 
+reg dpc4_valid; 
 
-        if (temp_y < 0)
-            final_y = -temp_y;
-        else if (temp_y > 15)
-            final_y = 30 - temp_y;
-        else
-            final_y = temp_y;
+reg [7:0] dpc1_count; 
+reg [7:0] dpc2_count; 
+reg [7:0] dpc3_count; 
+reg [7:0] dpc4_count; 
 
-        get_lsc_idx = {final_y[3:0], final_x[3:0]};
-    end
-endfunction
+reg [11:0] dpc3_pc;
+reg [11:0] dpc4_pc;
 
-function [7:0] get_demo_idx;
-    input [3:0] x_target;
-    input [3:0] y_target;
-    input signed [1:0] dx;
-    input signed [1:0] dy;
-    reg [3:0] fx, fy;
-    integer tx, ty;
-    begin
-        tx = $signed({1'b0, x_target}) + dx;
-        ty = $signed({1'b0, y_target}) + dy;
+reg [11:0] dpc4_target;
 
-        if (tx < 0)
-            fx = -tx;
-        else if (tx > 15)
-            fx = 30 - tx;
-        else
-            fx = tx[3:0];
+reg [11:0] dpc1_pc;
+reg [11:0] dpc1_H0, dpc1_H1, dpc1_H2, dpc1_H3, dpc1_V0, dpc1_V1, dpc1_V2, dpc1_V3;
+reg [11:0] dpc1_D1_0, dpc1_D1_1, dpc1_D1_2, dpc1_D1_3, dpc1_D2_0, dpc1_D2_1, dpc1_D2_2, dpc1_D2_3;
 
-        if (ty < 0)
-            fy = -ty;
-        else if (ty > 15)
-            fy = 30 - ty;
-        else
-            fy = ty[3:0];
+reg [11:0] dpc2_pc;
+reg [11:0] dpc2_med_H, dpc2_med_V, dpc2_med_D1, dpc2_med_D2;
+reg [11:0] dpc2_H0, dpc2_H1, dpc2_H2, dpc2_H3, dpc2_V0, dpc2_V1, dpc2_V2, dpc2_V3;
+reg [11:0] dpc2_D1_0, dpc2_D1_1, dpc2_D1_2, dpc2_D1_3, dpc2_D2_0, dpc2_D2_1, dpc2_D2_2, dpc2_D2_3;
 
-        get_demo_idx = {fy, fx};
-    end
-endfunction
+reg [11:0] dpc3_med_H, dpc3_med_V, dpc3_med_D1, dpc3_med_D2;
+reg [13:0] dpc3_sad_H, dpc3_sad_V, dpc3_sad_D1, dpc3_sad_D2;
 
-function [11:0] median4_avg_u12;
-    input [11:0] a;
-    input [11:0] b;
-    input [11:0] c;
-    input [11:0] d;
-    reg [11:0] s0, s1, s2, s3, tmp;
-    reg [12:0] mid_sum;
-    begin
-        s0 = a;
-        s1 = b;
-        s2 = c;
-        s3 = d;
+// DM + CCM
+reg out_gen_done; 
+reg [7:0] out_gen_count;
 
-        if (s0 > s1) begin tmp = s0; s0 = s1; s1 = tmp; end
-        if (s2 > s3) begin tmp = s2; s2 = s3; s3 = tmp; end
-        if (s0 > s2) begin tmp = s0; s0 = s2; s2 = tmp; end
-        if (s1 > s3) begin tmp = s1; s1 = s3; s3 = tmp; end
-        if (s1 > s2) begin tmp = s1; s1 = s2; s2 = tmp; end
+reg [11:0] out1_c, out1_n, out1_s, out1_w, out1_e, out1_nw, out1_ne, out1_sw, out1_se;
+reg [11:0] dm_r_c, dm_g_c, dm_b_c;
 
-        mid_sum = s1 + s2;
-        median4_avg_u12 = mid_sum[12:1];
-    end
-endfunction
+reg signed [24:0] s_dm_r, s_dm_g, s_dm_b;
 
-function [12:0] abs_diff_u12;
-    input [11:0] a;
-    input [11:0] b;
-    begin
-        if (a >= b)
-            abs_diff_u12 = a - b;
-        else
-            abs_diff_u12 = b - a;
-    end
-endfunction
+reg signed [24:0] out3_R11, out3_G11, out3_B11;
+reg signed [24:0] out3_R50, out3_G50, out3_B50;
 
-assign param_done_w = param_valid_d1 && !param_valid;
-assign blc_fire_w   = in_valid;
-assign blc_done_w   = (curr_state == RUN_BLC) && blc_started && !in_valid && !vld_s1 && !vld_s2;
-assign dpc_done_w   = (curr_state == RUN_DPC) && dpc_feed_done && !dpc_vld_s1 && !dpc_vld_s2;
-assign out_done_w   = (curr_state == DATA_OUT) && out_feed_done && !out_vld_s1;
+reg signed [25:0] out4_r_calc, out4_g_calc, out4_b_calc;
 
-assign dpc_h0_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd0)];
-assign dpc_h1_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd0)];
-assign dpc_h2_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd0)];
-assign dpc_h3_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd0)];
-assign dpc_v0_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd2)];
-assign dpc_v1_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0, -3'sd1)];
-assign dpc_v2_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd1)];
-assign dpc_v3_w  = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd0,  3'sd2)];
-assign dpc_d10_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2, -3'sd2)];
-assign dpc_d11_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1, -3'sd1)];
-assign dpc_d12_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1,  3'sd1)];
-assign dpc_d13_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2,  3'sd2)];
-assign dpc_d20_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd2, -3'sd2)];
-assign dpc_d21_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now,  3'sd1, -3'sd1)];
-assign dpc_d22_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd1,  3'sd1)];
-assign dpc_d23_w = main_buffer[get_lsc_idx(dpc_x_now, dpc_y_now, -3'sd2,  3'sd2)];
+reg out1_valid; 
+reg out2_valid; 
+reg out3_valid; 
+reg out4_valid; 
+
+reg [7:0] out1_count;
+reg [7:0] out2_count; 
+reg [7:0] out3_count;
+reg [7:0] out4_count;
+
+// ==========================================================================
+// Design
+// ==========================================================================
+// counter decode
+wire [3:0] in_count_y = in_count_reg[7:4]; 
+wire [3:0] in_count_x = in_count_reg[3:0];
+
+wire [3:0] lsc_write_y = lsc5_count[7:4];
+wire [3:0] lsc_write_x = lsc5_count[3:0];
+
+wire [3:0] lsc_read_y = dpc_gen_count[7:4];
+wire [3:0] lsc_read_x = dpc_gen_count[3:0];
+
+wire [3:0] dpc_write_y = dpc4_count[7:4];
+wire [3:0] dpc_write_x = dpc4_count[3:0];
+
+wire [3:0] dpc_read_y = out_gen_count[7:4];
+wire [3:0] dpc_read_x = out_gen_count[3:0];
+
+// param gain channel
+wire is_r  = (in_count_y[0] == 0 && in_count_x[0] == 0);
+wire is_gr = (in_count_y[0] == 0 && in_count_x[0] == 1);
+wire is_gb = (in_count_y[0] == 1 && in_count_x[0] == 0);
+wire is_b  = (in_count_y[0] == 1 && in_count_x[0] == 1);
+
+// BLC
+wire [11:0] blc_c = is_r  ? ((in_reg > 'd64) ? (in_reg - 'd64) : 'd0) : 
+                    is_gr ? ((in_reg > 'd48) ? (in_reg - 'd48) : 'd0) : 
+                    is_gb ? ((in_reg > 'd52) ? (in_reg - 'd52) : 'd0) : ((in_reg > 'd72) ? (in_reg - 'd72) : 'd0);
+
+// LSC
+wire [2:0] x0_c = (in_count_x >= 'd12) ? 'd4 : (in_count_x >= 'd9) ? 'd3 : (in_count_x >= 'd6) ? 'd2 : (in_count_x >= 'd3) ? 'd1 : 'd0;
+wire [2:0] y0_c = (in_count_y >= 'd12) ? 'd4 : (in_count_y >= 'd9) ? 'd3 : (in_count_y >= 'd6) ? 'd2 : (in_count_y >= 'd3) ? 'd1 : 'd0;
+wire [2:0] rx   = (in_count_x >= 'd12) ? (in_count_x > 'd14 ? 'd2 : in_count_x - 'd12) : (in_count_x - x0_c * 'd3);
+wire [2:0] ry   = (in_count_y >= 'd12) ? (in_count_y > 'd14 ? 'd2 : in_count_y - 'd12) : (in_count_y - y0_c * 'd3);
+
+wire [8:0] dx = (rx == 'd0) ? 'd0   : (rx == 'd1) ? 'd85  : 'd171; 
+wire [8:0] dy = (ry == 'd0) ? 'd0   : (ry == 'd1) ? 'd85  : 'd171; 
+wire [8:0] ix = (rx == 'd0) ? 'd256 : (rx == 'd1) ? 'd171 : 'd85;
+wire [8:0] iy = (ry == 'd0) ? 'd256 : (ry == 'd1) ? 'd171 : 'd85;
+
+wire [11:0] g00 = is_r ? param_buffer_R[y0_c][x0_c]     : is_gr ? param_buffer_Gr[y0_c][x0_c]     : is_gb ? param_buffer_Gb[y0_c][x0_c]     : param_buffer_B[y0_c][x0_c];
+wire [11:0] g01 = is_r ? param_buffer_R[y0_c][x0_c+1]   : is_gr ? param_buffer_Gr[y0_c][x0_c+1]   : is_gb ? param_buffer_Gb[y0_c][x0_c+1]   : param_buffer_B[y0_c][x0_c+1];
+wire [11:0] g10 = is_r ? param_buffer_R[y0_c+1][x0_c]   : is_gr ? param_buffer_Gr[y0_c+1][x0_c]   : is_gb ? param_buffer_Gb[y0_c+1][x0_c]   : param_buffer_B[y0_c+1][x0_c];
+wire [11:0] g11 = is_r ? param_buffer_R[y0_c+1][x0_c+1] : is_gr ? param_buffer_Gr[y0_c+1][x0_c+1] : is_gb ? param_buffer_Gb[y0_c+1][x0_c+1] : param_buffer_B[y0_c+1][x0_c+1];
+
+// calculate Gxy = (g00*ix + g01*dx) * iy + (g10*ix + g11*dx) * dy
+wire [20:0] g00_ix_c, g01_dx_c, g10_ix_c, g11_dx_c;
+wire [30:0] g_top_iy_c, g_bot_dy_c;
+Mult_LUT1 u_m00(.in(lsc_g00), .w(lsc_ix), .out(g00_ix_c));
+Mult_LUT1 u_m01(.in(lsc_g01), .w(lsc_dx), .out(g01_dx_c));
+Mult_LUT1 u_m10(.in(lsc_g10), .w(lsc_ix), .out(g10_ix_c));
+Mult_LUT1 u_m11(.in(lsc_g11), .w(lsc_dx), .out(g11_dx_c));
+
+Mult_LUT2 u_m_top(.in(lsc2_G_top), .w(lsc2_iy), .out(g_top_iy_c));
+Mult_LUT2 u_m_bot(.in(lsc2_G_bot), .w(lsc2_dy), .out(g_bot_dy_c));
+
+wire [16:0] Gxy = (g_top_iy_c + g_bot_dy_c + 32768) >> 16;
+
+wire [28:0] lsc4_shift_add  = lsc4_reg + 512;
+wire [18:0] lsc4_shifted    = lsc4_shift_add >> 10;
+wire [11:0] lsc4_clamp      = (lsc4_shifted > 4095) ? 4095 : lsc4_shifted[11:0];
+
+// DPC
+wire [3:0] dy_m2 = (lsc_read_y < 'd2)  ? ('d2 - lsc_read_y) : (lsc_read_y - 'd2);
+wire [3:0] dx_m2 = (lsc_read_x < 'd2)  ? ('d2 - lsc_read_x) : (lsc_read_x - 'd2);
+wire [3:0] dy_m1 = (lsc_read_y == 'd0) ? 'd1 : (lsc_read_y - 'd1);
+wire [3:0] dx_m1 = (lsc_read_x == 'd0) ? 'd1 : (lsc_read_x - 'd1); 
+wire [3:0] dy_0 = lsc_read_y;
+wire [3:0] dx_0 = lsc_read_x;
+wire [3:0] dy_p1 = (lsc_read_y == 'd15) ? 'd14 : (lsc_read_y + 'd1);
+wire [3:0] dx_p1 = (lsc_read_x == 'd15) ? 'd14 : (lsc_read_x + 'd1);
+wire [3:0] dy_p2 = (lsc_read_y > 'd13)  ? ('d28 - lsc_read_y) : (lsc_read_y + 'd2);
+wire [3:0] dx_p2 = (lsc_read_x > 'd13)  ? ('d28 - lsc_read_x) : (lsc_read_x + 'd2);
+
+wire [11:0] med_h_c, med_v_c, med_dpc1_c, med_dpc2_c;
+
+wire [12:0] sub_h0   = {1'b0, dpc2_H0}   - {1'b0, dpc2_med_H};
+wire [12:0] sub_h1   = {1'b0, dpc2_H1}   - {1'b0, dpc2_med_H};
+wire [12:0] sub_h2   = {1'b0, dpc2_H2}   - {1'b0, dpc2_med_H};
+wire [12:0] sub_h3   = {1'b0, dpc2_H3}   - {1'b0, dpc2_med_H};
+wire [12:0] sub_v0   = {1'b0, dpc2_V0}   - {1'b0, dpc2_med_V};
+wire [12:0] sub_v1   = {1'b0, dpc2_V1}   - {1'b0, dpc2_med_V};
+wire [12:0] sub_v2   = {1'b0, dpc2_V2}   - {1'b0, dpc2_med_V};
+wire [12:0] sub_v3   = {1'b0, dpc2_V3}   - {1'b0, dpc2_med_V};
+wire [12:0] sub_d1_0 = {1'b0, dpc2_D1_0} - {1'b0, dpc2_med_D1};
+wire [12:0] sub_d1_1 = {1'b0, dpc2_D1_1} - {1'b0, dpc2_med_D1};
+wire [12:0] sub_d1_2 = {1'b0, dpc2_D1_2} - {1'b0, dpc2_med_D1};
+wire [12:0] sub_d1_3 = {1'b0, dpc2_D1_3} - {1'b0, dpc2_med_D1};
+wire [12:0] sub_d2_0 = {1'b0, dpc2_D2_0} - {1'b0, dpc2_med_D2};
+wire [12:0] sub_d2_1 = {1'b0, dpc2_D2_1} - {1'b0, dpc2_med_D2};
+wire [12:0] sub_d2_2 = {1'b0, dpc2_D2_2} - {1'b0, dpc2_med_D2};
+wire [12:0] sub_d2_3 = {1'b0, dpc2_D2_3} - {1'b0, dpc2_med_D2};
+
+wire [11:0] abs_h0   = sub_h0[12]   ? -sub_h0[11:0]   : sub_h0[11:0];
+wire [11:0] abs_h1   = sub_h1[12]   ? -sub_h1[11:0]   : sub_h1[11:0];
+wire [11:0] abs_h2   = sub_h2[12]   ? -sub_h2[11:0]   : sub_h2[11:0];
+wire [11:0] abs_h3   = sub_h3[12]   ? -sub_h3[11:0]   : sub_h3[11:0];
+wire [11:0] abs_v0   = sub_v0[12]   ? -sub_v0[11:0]   : sub_v0[11:0];
+wire [11:0] abs_v1   = sub_v1[12]   ? -sub_v1[11:0]   : sub_v1[11:0];
+wire [11:0] abs_v2   = sub_v2[12]   ? -sub_v2[11:0]   : sub_v2[11:0];
+wire [11:0] abs_v3   = sub_v3[12]   ? -sub_v3[11:0]   : sub_v3[11:0];
+wire [11:0] abs_d1_0 = sub_d1_0[12] ? -sub_d1_0[11:0] : sub_d1_0[11:0];
+wire [11:0] abs_d1_1 = sub_d1_1[12] ? -sub_d1_1[11:0] : sub_d1_1[11:0];
+wire [11:0] abs_d1_2 = sub_d1_2[12] ? -sub_d1_2[11:0] : sub_d1_2[11:0];
+wire [11:0] abs_d1_3 = sub_d1_3[12] ? -sub_d1_3[11:0] : sub_d1_3[11:0];
+wire [11:0] abs_d2_0 = sub_d2_0[12] ? -sub_d2_0[11:0] : sub_d2_0[11:0];
+wire [11:0] abs_d2_1 = sub_d2_1[12] ? -sub_d2_1[11:0] : sub_d2_1[11:0];
+wire [11:0] abs_d2_2 = sub_d2_2[12] ? -sub_d2_2[11:0] : sub_d2_2[11:0];
+wire [11:0] abs_d2_3 = sub_d2_3[12] ? -sub_d2_3[11:0] : sub_d2_3[11:0];
+
+wire [13:0] sad_h_c = abs_h0 + abs_h1 + abs_h2 + abs_h3;
+wire [13:0] sad_v_c = abs_v0 + abs_v1 + abs_v2 + abs_v3;
+wire [13:0] sad_dpc1_c = abs_d1_0 + abs_d1_1 + abs_d1_2 + abs_d1_3;
+wire [13:0] sad_dpc2_c = abs_d2_0 + abs_d2_1 + abs_d2_2 + abs_d2_3;
+
+wire h_min  = (dpc3_sad_H <= dpc3_sad_V) && (dpc3_sad_H <= dpc3_sad_D1) && (dpc3_sad_H <= dpc3_sad_D2);
+wire v_min  = (!h_min) && (dpc3_sad_V <= dpc3_sad_D1) && (dpc3_sad_V <= dpc3_sad_D2);
+wire dpc1_min = (!h_min) && (!v_min) && (dpc3_sad_D1 <= dpc3_sad_D2);
+
+wire [11:0] target_c =  h_min    ? dpc3_med_H  : 
+                        v_min    ? dpc3_med_V  : 
+                        dpc1_min ? dpc3_med_D1 : dpc3_med_D2;
+
+wire [11:0] p_diff = (dpc4_pc > dpc4_target) ? (dpc4_pc - dpc4_target) : (dpc4_target - dpc4_pc);
+wire [11:0] dpc_out_c = (p_diff > 'd320) ? dpc4_target : dpc4_pc;
+
+wire [3:0] oy_0  = dpc_read_y;
+wire [3:0] ox_0  = dpc_read_x;
+wire [3:0] oy_p1 = (dpc_read_y == 'd15) ? 'd14 : (dpc_read_y + 'd1);
+wire [3:0] ox_p1 = (dpc_read_x == 'd15) ? 'd14 : (dpc_read_x + 'd1);
+wire [3:0] oy_m1 = (dpc_read_y == 'd0)  ? 'd1  : (dpc_read_y - 'd1);
+wire [3:0] ox_m1 = (dpc_read_x == 'd0)  ? 'd1  : (dpc_read_x - 'd1);
+
+Calc_Median u_med_h (.a(dpc1_H0), .b(dpc1_H1), .c(dpc1_H2), .d(dpc1_H3), .med(med_h_c));
+Calc_Median u_med_v (.a(dpc1_V0), .b(dpc1_V1), .c(dpc1_V2), .d(dpc1_V3), .med(med_v_c));
+Calc_Median u_med_d1(.a(dpc1_D1_0), .b(dpc1_D1_1), .c(dpc1_D1_2), .d(dpc1_D1_3), .med(med_dpc1_c));
+Calc_Median u_med_d2(.a(dpc1_D2_0), .b(dpc1_D2_1), .c(dpc1_D2_2), .d(dpc1_D2_3), .med(med_dpc2_c));
+
+wire m_is_r  = ((out1_count[7:4] % 'd2) == 'd0 && (out1_count[3:0] % 'd2 == 'd0));
+wire m_is_gr = ((out1_count[7:4] % 'd2) == 'd0 && (out1_count[3:0] % 'd2 == 'd1));
+wire m_is_gb = ((out1_count[7:4] % 'd2) == 'd1 && (out1_count[3:0] % 'd2 == 'd0));
+wire m_is_b  = ((out1_count[7:4] % 'd2) == 'd1 && (out1_count[3:0] % 'd2 == 'd1));
 
 always @(*) begin
-    next_state = curr_state;
-    case (curr_state)
-        IDLE: begin
-            if (param_valid)
-                next_state = LOAD_PARAM;
-            else if (in_valid)
-                next_state = RUN_BLC;
-        end
-        LOAD_PARAM: begin
-            if (param_done_w)
-                next_state = IDLE;
-        end
-        RUN_BLC: begin
-            if (blc_done_w)
-                next_state = RUN_DPC;
-        end
-        RUN_DPC: begin
-            if (dpc_done_w)
-                next_state = DATA_OUT;
-        end
-        DATA_OUT: begin
-            if (out_done_w)
-                next_state = IDLE;
-        end
-        default: next_state = IDLE;
+    if (m_is_r) begin
+        dm_r_c = out1_c;
+        dm_g_c = ({2'b0, out1_n}  + {2'b0, out1_s}  + {2'b0, out1_e}  + {2'b0, out1_w})  >> 2;
+        dm_b_c = ({2'b0, out1_nw} + {2'b0, out1_ne} + {2'b0, out1_sw} + {2'b0, out1_se}) >> 2;
+    end else if (m_is_b) begin
+        dm_r_c = ({2'b0, out1_nw} + {2'b0, out1_ne} + {2'b0, out1_sw} + {2'b0, out1_se}) >> 2;
+        dm_g_c = ({2'b0, out1_n}  + {2'b0, out1_s}  + {2'b0, out1_e}  + {2'b0, out1_w})  >> 2;
+        dm_b_c = out1_c;
+    end else if (m_is_gr) begin
+        dm_r_c = ({1'b0, out1_w} + {1'b0, out1_e}) >> 1;
+        dm_g_c = out1_c;
+        dm_b_c = ({1'b0, out1_n} + {1'b0, out1_s}) >> 1;
+    end else begin
+        dm_r_c = ({1'b0, out1_n} + {1'b0, out1_s}) >> 1;
+        dm_g_c = out1_c;
+        dm_b_c = ({1'b0, out1_w} + {1'b0, out1_e}) >> 1;
+    end
+end
+
+wire signed [25:0] shift_r = out4_r_calc >>> 10;
+wire signed [25:0] shift_g = out4_g_calc >>> 10;
+wire signed [25:0] shift_b = out4_b_calc >>> 10;
+
+wire [11:0] final_r = (shift_r < 0) ? 12'd0 : (shift_r > 4095) ? 12'd4095 : shift_r[11:0];
+wire [11:0] final_g = (shift_g < 0) ? 12'd0 : (shift_g > 4095) ? 12'd4095 : shift_g[11:0];
+wire [11:0] final_b = (shift_b < 0) ? 12'd0 : (shift_b > 4095) ? 12'd4095 : shift_b[11:0];
+
+wire dpc_valid_in = (state == DPC_ST && !dpc_gen_done);
+wire out_valid_in = (state == DATA_OUT && !out_gen_done);
+
+wire LSC_done = lsc5_valid && (lsc5_count == 'd255) && (state == DATA_IN);
+wire DPC_done = dpc4_valid && (dpc4_count == 'd255) && (state == DPC_ST);
+wire out_done = out4_valid && (out4_count == 'd255) && (state == DATA_OUT);
+
+// FSM
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        state <= IDLE;
+    end
+    else begin
+        state <= next_state;
+    end
+end
+
+always @(*) begin
+    case (state)
+        IDLE    :   next_state = in_valid ? DATA_IN     : IDLE;
+        DATA_IN :   next_state = LSC_done ? DPC_ST      : DATA_IN;
+        DPC_ST  :   next_state = DPC_done ? DATA_OUT    : DPC_ST;
+        DATA_OUT:   next_state = out_done ? IDLE        : DATA_OUT;
+        default :   next_state = IDLE;
     endcase
 end
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        curr_state <= IDLE;
-    else
-        curr_state <= next_state;
+// param buffer
+always @(posedge clk) begin
+    if (param_valid) begin
+        if (p_ch == 2'b00)      param_buffer_R[p_y][p_x]  <= param_gain;
+        else if (p_ch == 2'b01) param_buffer_Gr[p_y][p_x] <= param_gain;
+        else if (p_ch == 2'b10) param_buffer_Gb[p_y][p_x] <= param_gain;
+        else if (p_ch == 2'b11) param_buffer_B[p_y][p_x]  <= param_gain;
+    end
 end
 
 always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        param_valid_d1 <= 1'b0;
-    else
-        param_valid_d1 <= param_valid;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        param_cnt <= 8'd0;
+    if (!rst_n) begin
+        p_x <= 'd0; 
+    end
     else if (param_valid) begin
-        if (param_cnt < 8'd36)
-            gain_r_map[param_cnt[5:0]] <= param_gain;
-        else if (param_cnt < 8'd72)
-            gain_gr_map[param_cnt - 8'd36] <= param_gain;
-        else if (param_cnt < 8'd108)
-            gain_gb_map[param_cnt - 8'd72] <= param_gain;
-        else
-            gain_b_map[param_cnt - 8'd108] <= param_gain;
-        param_cnt <= param_cnt + 8'd1;
+        p_x <= (p_x == 'd5) ? 'd0 : (p_x + 'd1);
     end
-    else if (curr_state == IDLE)
-        param_cnt <= 8'd0;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        blc_cnt <= 8'd0;
-    else if (blc_fire_w)
-        blc_cnt <= blc_cnt + 8'd1;
-    else if (curr_state == IDLE)
-        blc_cnt <= 8'd0;
-end
-
-always @(posedge clk) begin
-    if (curr_state == IDLE)
-        blc_started <= 1'b0;
-    else if (curr_state == RUN_BLC && in_valid)
-        blc_started <= 1'b1;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        row_cnt <= 4'd0;
-    else if (blc_fire_w && col_cnt == 4'd15)
-        row_cnt <= row_cnt + 4'd1;
-    else if (curr_state == IDLE)
-        row_cnt <= 4'd0;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        col_cnt <= 4'd0;
-    else if (blc_fire_w && col_cnt == 4'd15)
-        col_cnt <= 4'd0;
-    else if (blc_fire_w)
-        col_cnt <= col_cnt + 4'd1;
-    else if (curr_state == IDLE)
-        col_cnt <= 4'd0;
-end
-
-always @(*) begin
-    case ({row_cnt[0], col_cnt[0]})
-        2'b00: b_offset = 7'd64;
-        2'b01: b_offset = 7'd48;
-        2'b10: b_offset = 7'd52;
-        default: b_offset = 7'd72;
-    endcase
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        dpc_cnt <= 8'd0;
-    else if (curr_state != RUN_DPC)
-        dpc_cnt <= 8'd0;
-    else if (!dpc_feed_done && dpc_cnt != 8'd255)
-        dpc_cnt <= dpc_cnt + 8'd1;
-    else
-        dpc_cnt <= dpc_cnt;
-end
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-        dpc_feed_done <= 1'b0;
-    else if (curr_state != RUN_DPC)
-        dpc_feed_done <= 1'b0;
-    else if (!dpc_feed_done && dpc_cnt == 8'd255)
-        dpc_feed_done <= 1'b1;
-end
-
-always @(*) begin
-    if (in > b_offset)
-        blc_pixel_w = in - b_offset;
-    else
-        blc_pixel_w = 12'd0;
-end
-
-always @(posedge clk) begin
-    if ((curr_state == RUN_BLC) || in_valid || vld_s1 || vld_s2) begin
-        if (vld_s2)
-            main_buffer[idx_s2] <= lsc_pixel_w;
-
-        blc_p_s2 <= blc_p_s1;
-        gain_s2  <= gain_w;
-        idx_s2   <= idx_s1;
-        vld_s2   <= vld_s1;
-
-        if (in_valid) begin
-            blc_p_s1 <= blc_pixel_w;
-            idx_s1   <= blc_cnt;
-            x_s1     <= col_cnt;
-            y_s1     <= row_cnt;
-            vld_s1   <= 1'b1;
-        end
-        else begin
-            vld_s1 <= 1'b0;
-        end
-    end
-    else begin
-        vld_s1 <= 1'b0;
-        vld_s2 <= 1'b0;
-    end
-end
-
-// LSC: lookup x0/rx/y0/ry and dx/ix/dy/iy in the same cycle, then fetch g00/g01/g10/g11.
-always @(*) begin
-    x_now = x_s1;
-    y_now = y_s1;
-
-    case (x_now)
-        4'd0:  begin x0_w = 3'd0; rx_w = 2'd0; end
-        4'd1:  begin x0_w = 3'd0; rx_w = 2'd1; end
-        4'd2:  begin x0_w = 3'd0; rx_w = 2'd2; end
-        4'd3:  begin x0_w = 3'd1; rx_w = 2'd0; end
-        4'd4:  begin x0_w = 3'd1; rx_w = 2'd1; end
-        4'd5:  begin x0_w = 3'd1; rx_w = 2'd2; end
-        4'd6:  begin x0_w = 3'd2; rx_w = 2'd0; end
-        4'd7:  begin x0_w = 3'd2; rx_w = 2'd1; end
-        4'd8:  begin x0_w = 3'd2; rx_w = 2'd2; end
-        4'd9:  begin x0_w = 3'd3; rx_w = 2'd0; end
-        4'd10: begin x0_w = 3'd3; rx_w = 2'd1; end
-        4'd11: begin x0_w = 3'd3; rx_w = 2'd2; end
-        4'd12: begin x0_w = 3'd4; rx_w = 2'd0; end
-        4'd13: begin x0_w = 3'd4; rx_w = 2'd1; end
-        default: begin x0_w = 3'd4; rx_w = 2'd2; end
-    endcase
-
-    case (rx_w)
-        2'd0: begin dx_w = 9'd0;   ix_w = 9'd256; end
-        2'd1: begin dx_w = 9'd85;  ix_w = 9'd171; end
-        2'd2: begin dx_w = 9'd171; ix_w = 9'd85;  end
-        default: begin dx_w = 9'd0; ix_w = 9'd256; end
-    endcase
-
-    case (y_now)
-        4'd0:  begin y0_w = 3'd0; ry_w = 2'd0; end
-        4'd1:  begin y0_w = 3'd0; ry_w = 2'd1; end
-        4'd2:  begin y0_w = 3'd0; ry_w = 2'd2; end
-        4'd3:  begin y0_w = 3'd1; ry_w = 2'd0; end
-        4'd4:  begin y0_w = 3'd1; ry_w = 2'd1; end
-        4'd5:  begin y0_w = 3'd1; ry_w = 2'd2; end
-        4'd6:  begin y0_w = 3'd2; ry_w = 2'd0; end
-        4'd7:  begin y0_w = 3'd2; ry_w = 2'd1; end
-        4'd8:  begin y0_w = 3'd2; ry_w = 2'd2; end
-        4'd9:  begin y0_w = 3'd3; ry_w = 2'd0; end
-        4'd10: begin y0_w = 3'd3; ry_w = 2'd1; end
-        4'd11: begin y0_w = 3'd3; ry_w = 2'd2; end
-        4'd12: begin y0_w = 3'd4; ry_w = 2'd0; end
-        4'd13: begin y0_w = 3'd4; ry_w = 2'd1; end
-        default: begin y0_w = 3'd4; ry_w = 2'd2; end
-    endcase
-
-    case (ry_w)
-        2'd0: begin dy_w = 9'd0;   iy_w = 9'd256; end
-        2'd1: begin dy_w = 9'd85;  iy_w = 9'd171; end
-        2'd2: begin dy_w = 9'd171; iy_w = 9'd85;  end
-        default: begin dy_w = 9'd0; iy_w = 9'd256; end
-    endcase
-
-    idx00_w = (y0_w << 2) + (y0_w << 1) + x0_w;
-    idx01_w = (y0_w << 2) + (y0_w << 1) + x0_w + 3'd1;
-    idx10_w = ((y0_w + 3'd1) << 2) + ((y0_w + 3'd1) << 1) + x0_w;
-    idx11_w = ((y0_w + 3'd1) << 2) + ((y0_w + 3'd1) << 1) + x0_w + 3'd1;
-
-    case ({y_now[0], x_now[0]})
-        2'b00: begin
-            g00_w = gain_r_map[idx00_w];
-            g01_w = gain_r_map[idx01_w];
-            g10_w = gain_r_map[idx10_w];
-            g11_w = gain_r_map[idx11_w];
-        end
-        2'b01: begin
-            g00_w = gain_gr_map[idx00_w];
-            g01_w = gain_gr_map[idx01_w];
-            g10_w = gain_gr_map[idx10_w];
-            g11_w = gain_gr_map[idx11_w];
-        end
-        2'b10: begin
-            g00_w = gain_gb_map[idx00_w];
-            g01_w = gain_gb_map[idx01_w];
-            g10_w = gain_gb_map[idx10_w];
-            g11_w = gain_gb_map[idx11_w];
-        end
-        default: begin
-            g00_w = gain_b_map[idx00_w];
-            g01_w = gain_b_map[idx01_w];
-            g10_w = gain_b_map[idx10_w];
-            g11_w = gain_b_map[idx11_w];
-        end
-    endcase
-end
-
-// LSC: calculate G(x,y), then apply it to P(x,y).
-always @(*) begin
-    gain_top_w = (g00_w * ix_w) + (g01_w * dx_w);
-    gain_bot_w = (g10_w * ix_w) + (g11_w * dx_w);
-    gain_accum_w = (gain_top_w * iy_w) +
-                   (gain_bot_w * dy_w) +
-                   32'd32768;
-    gain_w = gain_accum_w[31:16];
-
-    lsc_accum_w = (blc_p_s2 * gain_s2) + 32'd512;
-    if (lsc_accum_w[31:22] != 0)
-        lsc_pixel_w = 12'd4095;
-    else
-        lsc_pixel_w = lsc_accum_w[21:10];
-end
-
-// DPC: form 4 directions, compare SAD, and replace the center pixel if it differs from target by more than 320.
-always @(*) begin
-    dpc_x_now = dpc_cnt[3:0];
-    dpc_y_now = dpc_cnt[7:4];
-    dpc_p_w   = main_buffer[dpc_cnt];
-
-    dpc_h_med_w  = median4_avg_u12(dpc_h0_w,  dpc_h1_w,  dpc_h2_w,  dpc_h3_w);
-    dpc_v_med_w  = median4_avg_u12(dpc_v0_w,  dpc_v1_w,  dpc_v2_w,  dpc_v3_w);
-    dpc_d1_med_w = median4_avg_u12(dpc_d10_w, dpc_d11_w, dpc_d12_w, dpc_d13_w);
-    dpc_d2_med_w = median4_avg_u12(dpc_d20_w, dpc_d21_w, dpc_d22_w, dpc_d23_w);
-
-    dpc_h_sad_w  = abs_diff_u12(dpc_h0_s1,  dpc_h_med_s1)  + abs_diff_u12(dpc_h1_s1,  dpc_h_med_s1)  +
-                   abs_diff_u12(dpc_h2_s1,  dpc_h_med_s1)  + abs_diff_u12(dpc_h3_s1,  dpc_h_med_s1);
-    dpc_v_sad_w  = abs_diff_u12(dpc_v0_s1,  dpc_v_med_s1)  + abs_diff_u12(dpc_v1_s1,  dpc_v_med_s1)  +
-                   abs_diff_u12(dpc_v2_s1,  dpc_v_med_s1)  + abs_diff_u12(dpc_v3_s1,  dpc_v_med_s1);
-    dpc_d1_sad_w = abs_diff_u12(dpc_d10_s1, dpc_d1_med_s1) + abs_diff_u12(dpc_d11_s1, dpc_d1_med_s1) +
-                   abs_diff_u12(dpc_d12_s1, dpc_d1_med_s1) + abs_diff_u12(dpc_d13_s1, dpc_d1_med_s1);
-    dpc_d2_sad_w = abs_diff_u12(dpc_d20_s1, dpc_d2_med_s1) + abs_diff_u12(dpc_d21_s1, dpc_d2_med_s1) +
-                   abs_diff_u12(dpc_d22_s1, dpc_d2_med_s1) + abs_diff_u12(dpc_d23_s1, dpc_d2_med_s1);
-
-    dpc_best_sad_w = dpc_h_sad_s2;
-    dpc_target_w   = dpc_h_med_s2;
-    if (dpc_v_sad_s2 < dpc_best_sad_w) begin
-        dpc_best_sad_w = dpc_v_sad_s2;
-        dpc_target_w   = dpc_v_med_s2;
-    end
-    if (dpc_d1_sad_s2 < dpc_best_sad_w) begin
-        dpc_best_sad_w = dpc_d1_sad_s2;
-        dpc_target_w   = dpc_d1_med_s2;
-    end
-    if (dpc_d2_sad_s2 < dpc_best_sad_w)
-        dpc_target_w = dpc_d2_med_s2;
-
-    if (abs_diff_u12(dpc_p_s2, dpc_target_w) > 13'd320)
-        dpc_pixel_w = dpc_target_w;
-    else
-        dpc_pixel_w = dpc_p_s2;
 end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        dpc_vld_s1    <= 1'b0;
-        dpc_vld_s2    <= 1'b0;
+        p_y <= 'd0; 
     end
-    else if ((curr_state == RUN_DPC) || dpc_vld_s1 || dpc_vld_s2) begin
-        if (dpc_vld_s2)
-            dpc_buffer[dpc_idx_s2] <= dpc_pixel_w;
-
-        dpc_vld_s2    <= dpc_vld_s1;
-        dpc_idx_s2    <= dpc_idx_s1;
-        dpc_p_s2      <= dpc_p_s1;
-        dpc_h_med_s2  <= dpc_h_med_s1;
-        dpc_v_med_s2  <= dpc_v_med_s1;
-        dpc_d1_med_s2 <= dpc_d1_med_s1;
-        dpc_d2_med_s2 <= dpc_d2_med_s1;
-        dpc_h_sad_s2  <= dpc_h_sad_w;
-        dpc_v_sad_s2  <= dpc_v_sad_w;
-        dpc_d1_sad_s2 <= dpc_d1_sad_w;
-        dpc_d2_sad_s2 <= dpc_d2_sad_w;
-
-        if (curr_state == RUN_DPC && !dpc_feed_done) begin
-            dpc_vld_s1    <= 1'b1;
-            dpc_idx_s1    <= dpc_cnt;
-            dpc_p_s1      <= dpc_p_w;
-            dpc_h0_s1     <= dpc_h0_w;
-            dpc_h1_s1     <= dpc_h1_w;
-            dpc_h2_s1     <= dpc_h2_w;
-            dpc_h3_s1     <= dpc_h3_w;
-            dpc_v0_s1     <= dpc_v0_w;
-            dpc_v1_s1     <= dpc_v1_w;
-            dpc_v2_s1     <= dpc_v2_w;
-            dpc_v3_s1     <= dpc_v3_w;
-            dpc_d10_s1    <= dpc_d10_w;
-            dpc_d11_s1    <= dpc_d11_w;
-            dpc_d12_s1    <= dpc_d12_w;
-            dpc_d13_s1    <= dpc_d13_w;
-            dpc_d20_s1    <= dpc_d20_w;
-            dpc_d21_s1    <= dpc_d21_w;
-            dpc_d22_s1    <= dpc_d22_w;
-            dpc_d23_s1    <= dpc_d23_w;
-            dpc_h_med_s1  <= dpc_h_med_w;
-            dpc_v_med_s1  <= dpc_v_med_w;
-            dpc_d1_med_s1 <= dpc_d1_med_w;
-            dpc_d2_med_s1 <= dpc_d2_med_w;
-        end
-        else begin
-            dpc_vld_s1 <= 1'b0;
-        end
-    end
-    else begin
-        dpc_vld_s1 <= 1'b0;
-        dpc_vld_s2 <= 1'b0;
+    else if (param_valid & (p_x == 'd5)) begin
+        p_y <= (p_y == 'd5) ? 'd0 : (p_y + 'd1);
     end
 end
 
-// Demosaic: extract the 3x3 window from dpc_buffer and interpolate missing RGB components.
-always @(*) begin
-    dx = out_cnt[3:0];
-    dy = out_cnt[7:4];
-
-    p_c  = dpc_buffer[out_cnt];
-    p_n  = dpc_buffer[get_demo_idx(dx, dy,  2'sd0, -2'sd1)];
-    p_s  = dpc_buffer[get_demo_idx(dx, dy,  2'sd0,  2'sd1)];
-    p_e  = dpc_buffer[get_demo_idx(dx, dy,  2'sd1,  2'sd0)];
-    p_w  = dpc_buffer[get_demo_idx(dx, dy, -2'sd1,  2'sd0)];
-    p_nw = dpc_buffer[get_demo_idx(dx, dy, -2'sd1, -2'sd1)];
-    p_ne = dpc_buffer[get_demo_idx(dx, dy,  2'sd1, -2'sd1)];
-    p_sw = dpc_buffer[get_demo_idx(dx, dy, -2'sd1,  2'sd1)];
-    p_se = dpc_buffer[get_demo_idx(dx, dy,  2'sd1,  2'sd1)];
-
-    case ({dy[0], dx[0]})
-        2'b00: begin
-            demo_r_w = p_c;
-            sum4_w   = p_n + p_s + p_e + p_w;
-            demo_g_w = sum4_w >> 2;
-            sum4_w   = p_nw + p_ne + p_sw + p_se;
-            demo_b_w = sum4_w >> 2;
-        end
-        2'b01: begin
-            sum2_w   = p_w + p_e;
-            demo_r_w = sum2_w >> 1;
-            demo_g_w = p_c;
-            sum2_w   = p_n + p_s;
-            demo_b_w = sum2_w >> 1;
-        end
-        2'b10: begin
-            sum2_w   = p_n + p_s;
-            demo_r_w = sum2_w >> 1;
-            demo_g_w = p_c;
-            sum2_w   = p_w + p_e;
-            demo_b_w = sum2_w >> 1;
-        end
-        default: begin
-            sum4_w   = p_nw + p_ne + p_sw + p_se;
-            demo_r_w = sum4_w >> 2;
-            sum4_w   = p_n + p_s + p_e + p_w;
-            demo_g_w = sum4_w >> 2;
-            demo_b_w = p_c;
-        end
-    endcase
-end
-
-// CCM: calculate one RGB output from one LSC pixel.
-always @(*) begin
-    ccm_r_raw_w = mul_u12_1100_s25(demo_r_s1)
-                + mul_u12_neg50_s25(demo_g_s1)
-                + mul_u12_neg50_s25(demo_b_s1)
-                + 26'sd512;
-    ccm_g_raw_w = mul_u12_neg50_s25(demo_r_s1)
-                + mul_u12_1100_s25(demo_g_s1)
-                + mul_u12_neg50_s25(demo_b_s1)
-                + 26'sd512;
-    ccm_b_raw_w = mul_u12_neg50_s25(demo_r_s1)
-                + mul_u12_neg50_s25(demo_g_s1)
-                + mul_u12_1100_s25(demo_b_s1)
-                + 26'sd512;
-
-    ccm_r_w = clamp_u12(ccm_r_raw_w >>> 10);
-    ccm_g_w = clamp_u12(ccm_g_raw_w >>> 10);
-    ccm_b_w = clamp_u12(ccm_b_raw_w >>> 10);
-end
-
-// DATA_OUT pipeline: register demosaic RGB, then do CCM/clamp directly to outputs.
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        out_cnt       <= 8'd0;
-        out_feed_done <= 1'b0;
-        out_vld_s1    <= 1'b0;
-        out_valid     <= 1'b0;
-        r_out         <= 12'd0;
-        g_out         <= 12'd0;
-        b_out         <= 12'd0;
+        p_ch <= 'd0; 
     end
-    else if (curr_state == DATA_OUT) begin
-        out_valid <= out_vld_s1;
-        if (out_vld_s1) begin
-            r_out <= ccm_r_w;
-            g_out <= ccm_g_w;
-            b_out <= ccm_b_w;
-        end
-        else begin
-            r_out <= 12'd0;
-            g_out <= 12'd0;
-            b_out <= 12'd0;
-        end
-
-        if (!out_feed_done) begin
-            out_vld_s1 <= 1'b1;
-            demo_r_s1  <= demo_r_w;
-            demo_g_s1  <= demo_g_w;
-            demo_b_s1  <= demo_b_w;
-
-            if (out_cnt == 8'd255)
-                out_feed_done <= 1'b1;
-            else
-                out_cnt <= out_cnt + 8'd1;
-        end
-        else begin
-            out_vld_s1 <= 1'b0;
-        end
-    end
-    else begin
-        out_cnt       <= 8'd0;
-        out_feed_done <= 1'b0;
-        out_vld_s1    <= 1'b0;
-        out_valid     <= 1'b0;
-        r_out         <= 12'd0;
-        g_out         <= 12'd0;
-        b_out         <= 12'd0;
+    else if (param_valid & (p_x == 'd5) & (p_y == 'd5)) begin
+        p_ch <= (p_ch == 'd3) ? 'd0 : (p_ch + 'd1);
     end
 end
+
+// input regs
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        in_count <= 'd0;
+    end
+    else if (in_valid) begin
+        in_count <= in_count + 'd1;
+    end
+    else if (state == IDLE) begin
+        in_count <= 'd0;
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        in_reg          <= 'd0; 
+        in_valid_reg    <= 'd0; 
+        in_count_reg    <= 'd0; 
+    end
+    else begin 
+        in_reg          <= in; 
+        in_valid_reg    <= in_valid; 
+        in_count_reg    <= in_valid ? in_count : in_count_reg; 
+    end
+end
+
+// BLC pipeline
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        blc_valid_reg <= 'd0; 
+        blc_count       <= 'd0; 
+        blc_count       <= 'd0;
+    end
+    else begin
+        blc_valid_reg <= in_valid_reg; 
+        blc_reg       <= blc_c;
+        blc_count       <= in_count_reg; 
+    end
+end
+
+// LSC pipeline
+// stage 1: memory acces, g00, g01, g10, g11 and calculate ix, iy, dx, dy
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        lsc_g00 <= 'd0; 
+        lsc_g01 <= 'd0; 
+        lsc_g10 <= 'd0; 
+        lsc_g11 <= 'd0;
+    end
+    else begin
+        lsc_g00 <= g00; 
+        lsc_g01 <= g01; 
+        lsc_g10 <= g10; 
+        lsc_g11 <= g11;
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        lsc_ix  <= 'd0; 
+        lsc_iy  <= 'd0; 
+        lsc_dx  <= 'd0; 
+        lsc_dy  <= 'd0;
+    end
+    else begin
+        lsc_ix  <= ix; 
+        lsc_iy  <= iy; 
+        lsc_dx  <= dx; 
+        lsc_dy  <= dy;
+    end
+end
+
+// bypassing
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        lsc_valid_reg   <= 'd0; 
+        lsc_count       <= 'd0; 
+        lsc_reg         <= 'd0;
+    end
+    else begin
+        lsc_valid_reg   <= blc_valid_reg; 
+        lsc_count       <= blc_count; 
+        lsc_reg         <= blc_reg;
+    end
+end
+
+// stage 2: calculate g00*ix + g01*dx and g10*ix + g11*dx
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        lsc2_iy     <= 'd0;
+        lsc2_dy     <= 'd0;
+        lsc2_G_top  <= 'd0;
+        lsc2_G_bot  <= 'd0;
+    end
+    else begin
+        lsc2_iy     <= lsc_iy; 
+        lsc2_dy     <= lsc_dy;
+        lsc2_G_top  <= g00_ix_c + g01_dx_c;
+        lsc2_G_bot  <= g10_ix_c + g11_dx_c;
+    end
+end
+
+// stage 3: calculate Gxy = (g00*ix + g01*dx) * iy + (g10*ix + g11*dx) * dy
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        lsc3_valid  <= 'd0; 
+        lsc3_count  <= 'd0; 
+        lsc3_reg    <= 'd0;
+        lsc3_Gxy    <= 'd0;
+    end
+    else begin
+        lsc3_valid  <= lsc_valid_reg; 
+        lsc3_count  <= lsc_count; 
+        lsc3_reg    <= lsc_reg;
+        lsc3_Gxy    <= Gxy;
+    end
+end
+
+// stage 4: calculate Pxy * Gxy
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        lsc4_valid <= 'd0; 
+        lsc4_count <= 'd0; 
+        lsc4_reg  <= 'd0; 
+    end
+    else begin
+        lsc4_valid <= lsc3_valid; 
+        lsc4_count <= lsc3_count;
+        lsc4_reg  <= lsc3_reg * lsc3_Gxy;
+    end
+end
+
+// stage 5: clamp
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        lsc5_valid    <= 'd0; 
+        lsc5_count    <= 'd0; 
+        lsc5_reg      <= 'd0; 
+    end
+    else begin
+        lsc5_valid    <= lsc4_valid; 
+        lsc5_count    <= lsc4_count; 
+        lsc5_reg      <= lsc4_clamp;
+    end
+end
+
+// stage 6: store into memory
+always @(posedge clk) begin
+    if (lsc5_valid && state == DATA_IN) begin
+        lsc_buf[lsc_write_y][lsc_write_x] <= lsc5_reg;
+    end
+end
+
+// DPC Control
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        dpc_gen_done <= 'd0; 
+    end 
+    else if (state == DPC_ST) begin
+        if (!dpc_gen_done & dpc_gen_count == 'd255) begin
+            dpc_gen_done <= 'd1; 
+        end
+    end 
+    else begin 
+        dpc_gen_done <= 'd0; 
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        dpc_gen_count <= 'd0; 
+    end 
+    else if (state == DPC_ST) begin
+        if (!dpc_gen_done) begin 
+            dpc_gen_count <= dpc_gen_count + 'd1; 
+        end
+    end 
+    else begin 
+        dpc_gen_count <= 'd0; 
+    end
+end
+
+// DPC pipeline
+// stage 1: memory access
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        dpc1_valid <= 'd0; 
+        dpc1_count <= 'd0; 
+    end
+    else begin
+        dpc1_valid <= dpc_valid_in; 
+        dpc1_count <= dpc_gen_count; 
+    end
+end
+
+always @(posedge clk) begin
+    dpc1_pc   <= lsc_buf[dy_0][dx_0];
+    dpc1_H0   <= lsc_buf[dy_0][dx_m2];  dpc1_H1   <= lsc_buf[dy_0][dx_m1];  dpc1_H2   <= lsc_buf[dy_0][dx_p1];  dpc1_H3   <= lsc_buf[dy_0][dx_p2];
+    dpc1_V0   <= lsc_buf[dy_m2][dx_0];  dpc1_V1   <= lsc_buf[dy_m1][dx_0];  dpc1_V2   <= lsc_buf[dy_p1][dx_0];  dpc1_V3   <= lsc_buf[dy_p2][dx_0];
+    dpc1_D1_0 <= lsc_buf[dy_m2][dx_m2]; dpc1_D1_1 <= lsc_buf[dy_m1][dx_m1]; dpc1_D1_2 <= lsc_buf[dy_p1][dx_p1]; dpc1_D1_3 <= lsc_buf[dy_p2][dx_p2];
+    dpc1_D2_0 <= lsc_buf[dy_m2][dx_p2]; dpc1_D2_1 <= lsc_buf[dy_m1][dx_p1]; dpc1_D2_2 <= lsc_buf[dy_p1][dx_m1]; dpc1_D2_3 <= lsc_buf[dy_p2][dx_m2];
+end
+
+
+// stage 2: calculate median
+always @(posedge clk) begin
+    dpc2_med_H  <= med_h_c; 
+    dpc2_med_V  <= med_v_c; 
+    dpc2_med_D1 <= med_dpc1_c; 
+    dpc2_med_D2 <= med_dpc2_c;
+end
+
+// stage 2: bypassing
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        dpc2_valid <= 'd0; 
+        dpc2_count <= 'd0; 
+    end
+    else begin
+        dpc2_valid <= dpc1_valid; dpc2_count <= dpc1_count; 
+        dpc2_pc <= dpc1_pc;
+        dpc2_H0 <= dpc1_H0; dpc2_H1 <= dpc1_H1; dpc2_H2 <= dpc1_H2; dpc2_H3 <= dpc1_H3;
+        dpc2_V0 <= dpc1_V0; dpc2_V1 <= dpc1_V1; dpc2_V2 <= dpc1_V2; dpc2_V3 <= dpc1_V3;
+        dpc2_D1_0 <= dpc1_D1_0; dpc2_D1_1 <= dpc1_D1_1; dpc2_D1_2 <= dpc1_D1_2; dpc2_D1_3 <= dpc1_D1_3;
+        dpc2_D2_0 <= dpc1_D2_0; dpc2_D2_1 <= dpc1_D2_1; dpc2_D2_2 <= dpc1_D2_2; dpc2_D2_3 <= dpc1_D2_3;
+    end
+end
+
+// stage 3: calculate
+always @(posedge clk) begin
+    dpc3_sad_H  <= sad_h_c;
+    dpc3_sad_V  <= sad_v_c; 
+    dpc3_sad_D1 <= sad_dpc1_c; 
+    dpc3_sad_D2 <= sad_dpc2_c;
+end
+
+// stage 3: bypassing
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        dpc3_valid <= 'd0; 
+        dpc3_count <= 'd0; 
+    end
+    else begin
+        dpc3_valid  <= dpc2_valid; 
+        dpc3_count  <= dpc2_count; 
+        dpc3_pc     <= dpc2_pc;
+        dpc3_med_H  <= dpc2_med_H; 
+        dpc3_med_V  <= dpc2_med_V; 
+        dpc3_med_D1 <= dpc2_med_D1; 
+        dpc3_med_D2 <= dpc2_med_D2;
+    end
+end
+
+// stage 4: calculate target
+always @(posedge clk) begin
+    dpc4_target <= target_c; 
+end
+
+// stage 4: bypassing
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        dpc4_valid  <= 'd0; 
+        dpc4_count  <= 'd0; 
+    end
+    else begin 
+        dpc4_valid  <= dpc3_valid; 
+        dpc4_count  <= dpc3_count; 
+        dpc4_pc     <= dpc3_pc;  
+    end
+end
+
+// stage 5: store into memory
+always @(posedge clk) begin
+    if (dpc4_valid && state == DPC_ST) begin
+        dpc_buf[dpc_write_y][dpc_write_x] <= dpc_out_c;
+    end
+end
+
+// Output Control
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        out_gen_done <= 'd0; 
+    end 
+    else if (state == DATA_OUT) begin
+        if (!out_gen_done && out_gen_count == 255) begin 
+            out_gen_done <= 'd1; 
+        end
+    end 
+    else begin 
+        out_gen_done <= 'd0; 
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        out_gen_count <= 'd0; 
+    end 
+    else if (state == DATA_OUT) begin
+        if (!out_gen_done) begin 
+            out_gen_count <= out_gen_count + 'd1;
+        end
+    end 
+    else begin 
+        out_gen_count <= 'd0; 
+    end
+end
+
+// Output pipeline (DM + CCM)
+// state 1: memory access
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        out1_valid <= 'd0; 
+        out1_count <= 'd0; 
+    end
+    else begin
+        out1_valid <= out_valid_in; 
+        out1_count <= out_gen_count;
+        out1_c  <= dpc_buf[oy_0][ox_0];
+        out1_n  <= dpc_buf[oy_m1][ox_0];  
+        out1_s  <= dpc_buf[oy_p1][ox_0];
+        out1_w  <= dpc_buf[oy_0][ox_m1];  
+        out1_e  <= dpc_buf[oy_0][ox_p1];
+        out1_nw <= dpc_buf[oy_m1][ox_m1]; 
+        out1_ne <= dpc_buf[oy_m1][ox_p1];
+        out1_sw <= dpc_buf[oy_p1][ox_m1]; 
+        out1_se <= dpc_buf[oy_p1][ox_p1];
+    end
+end
+
+// state 2: calculate DM
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        out2_valid <= 'd0; 
+        out2_count <= 'd0; 
+        s_dm_r <= 'd0; 
+        s_dm_g <= 'd0; 
+        s_dm_b <= 'd0; 
+    end
+    else begin
+        out2_valid <= out1_valid; 
+        out2_count <= out1_count;
+        s_dm_r <= {13'b0, dm_r_c};
+        s_dm_g <= {13'b0, dm_g_c};
+        s_dm_b <= {13'b0, dm_b_c};
+    end
+end
+
+// state 3: calculate 1100*RGB and 50*RGB
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        out3_valid <= 'd0; 
+        out3_count <= 'd0; 
+        end
+    else begin
+        out3_valid <= out2_valid; 
+        out3_count <= out2_count;
+        out3_R11 <= {s_dm_r, 10'b0} + {s_dm_r, 6'b0} + {s_dm_r, 3'b0} + {s_dm_r, 2'b0}; // 1024+64+8+4=110
+        out3_R50 <= {s_dm_r, 5'b0}  + {s_dm_r, 4'b0} + {s_dm_r, 1'b0};                  // 32+16+2=50
+        out3_G11 <= {s_dm_g, 10'b0} + {s_dm_g, 6'b0} + {s_dm_g, 3'b0} + {s_dm_g, 2'b0};
+        out3_G50 <= {s_dm_g, 5'b0}  + {s_dm_g, 4'b0} + {s_dm_g, 1'b0};
+        out3_B11 <= {s_dm_b, 10'b0} + {s_dm_b, 6'b0} + {s_dm_b, 3'b0} + {s_dm_b, 2'b0};
+        out3_B50 <= {s_dm_b, 5'b0}  + {s_dm_b, 4'b0} + {s_dm_b, 1'b0};
+    end
+end
+
+// state 4: Calculate Matrxi Multiplication
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin 
+        out4_valid <= 'd0; 
+        out4_count <= 'd0; 
+        end
+    else begin
+        out4_valid <= out3_valid; 
+        out4_count <= out3_count;
+        out4_r_calc <= out3_R11 - out3_G50 - out3_B50 + 512;
+        out4_g_calc <= -out3_R50 + out3_G11 - out3_B50 + 512;
+        out4_b_calc <= -out3_R50 - out3_G50 + out3_B11 + 512;
+    end
+end
+
+// state 5: Output
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        out_valid <= 'd0; 
+        r_out <= 'd0;
+        g_out <= 'd0; 
+        b_out <= 'd0;
+    end else begin
+        out_valid <= out4_valid;
+        r_out <= out4_valid ? final_r : 0;
+        g_out <= out4_valid ? final_g : 0;
+        b_out <= out4_valid ? final_b : 0;
+    end
+end
+
+endmodule
+
+
+// LUT Mult
+module Mult_LUT1 (
+    input  [11:0] in,
+    input  [8:0] w,
+    output reg [20:0] out
+);
+    always @(*) begin
+        if (w == 256)      out = {in, 8'b0};
+        else if (w == 171) out = {in, 7'b0} + {in, 5'b0} + {in, 3'b0} + {in, 1'b0} + in;
+        else if (w == 85)  out = {in, 6'b0} + {in, 4'b0} + {in, 2'b0} + in;
+        else               out = 0;
+    end
+endmodule
+
+module Mult_LUT2 (
+    input  [21:0] in,
+    input  [8:0] w,
+    output reg [30:0] out
+);
+    always @(*) begin
+        if (w == 256)      out = {in, 8'b0};
+        else if (w == 171) out = {in, 7'b0} + {in, 5'b0} + {in, 3'b0} + {in, 1'b0} + in;
+        else if (w == 85)  out = {in, 6'b0} + {in, 4'b0} + {in, 2'b0} + in;
+        else               out = 0;
+    end
+endmodule
+
+
+module Calc_Median (
+    input  [11:0] a, b, c, d,
+    output [11:0] med
+);
+
+// Stage 1
+wire [11:0] ab_min = (a < b) ? a : b;
+wire [11:0] ab_max = (a < b) ? b : a;
+wire [11:0] cd_min = (c < d) ? c : d;
+wire [11:0] cd_max = (c < d) ? d : c;
+
+// Stage 2
+wire [11:0] low_min  = (ab_min < cd_min) ? ab_min : cd_min;
+wire [11:0] mid1     = (ab_min < cd_min) ? cd_min : ab_min;
+wire [11:0] mid2     = (ab_max < cd_max) ? ab_max : cd_max;
+wire [11:0] high_max = (ab_max < cd_max) ? cd_max : ab_max;
+
+// Stage 3
+wire [12:0] mid_sum = {1'b0, mid1} + {1'b0, mid2};
+assign med = mid_sum >> 1;
 
 endmodule
